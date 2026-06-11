@@ -1,152 +1,153 @@
 # Lelware SDK (Unity)
 
-Kliencki SDK do API portalu LelwarePortal. Loguje się przez bearer token, cache'uje
-go i dokleja do każdego żądania, zawsze wysyła nagłówek `Is-Client: api-client`, oraz
-pozwala generować typowane klasy request/response z manifestu schematu (build-time) —
-z generycznym escape hatchem dla dowolnych własnych schem.
+Client SDK for the LelwarePortal API. It logs in with a bearer token, caches it,
+and attaches it to every request, always sends the `Is-Client: api-client` header,
+and lets you generate typed request/response classes from a schema manifest
+(build-time) — with a generic escape hatch for any custom schema of your own.
 
-## Instalacja (UPM)
+## Installation (UPM)
 
-Pakiet zależy od `com.unity.nuget.newtonsoft-json` (rozwiązuje się automatycznie z
-Package Managera). Dodaj do `Packages/manifest.json` projektu Unity:
+The package depends on `com.unity.nuget.newtonsoft-json` (resolved automatically by
+the Package Manager). Add this to your Unity project's `Packages/manifest.json`:
 
 ```json
-"com.lelware.sdk": "https://dev.azure.com/.../_git/...?path=/sdk/unity/com.lelware.sdk"
+"com.lelware.sdk": "https://github.com/mikii123/lelware-sdk.git"
 ```
 
-albo skopiuj folder `com.lelware.sdk/` do `Packages/` w projekcie.
+or copy the `com.lelware.sdk/` folder into your project's `Packages/`.
 
-## Szybki start
+## Quick start
 
 ```csharp
 using Lelware.Sdk;
 
 var config = new LelwareClientConfig(
     baseUrl:   "https://portal.lelware.com",
-    projectId: "Clearwater",          // ID projektu = segment route (GUID lub literał)
-    deviceId:  SystemInfo.deviceUniqueIdentifier); // opcjonalnie, stałe per urządzenie
+    projectId: "Clearwater",          // project ID = route segment (GUID or literal)
+    deviceId:  SystemInfo.deviceUniqueIdentifier); // optional, stable per device
 
 var client = new LelwareClient(config);
 ```
 
-`LelwareClientConfig` jest `[Serializable]`, więc zamiast tworzyć go w kodzie możesz
-wystawić go jako pole na `MonoBehaviour`/`ScriptableObject` i wypełnić w Inspectorze:
+`LelwareClientConfig` is `[Serializable]`, so instead of building it in code you can
+expose it as a field on a `MonoBehaviour`/`ScriptableObject` and fill it in the Inspector:
 
 ```csharp
 public class LelwareBootstrap : MonoBehaviour
 {
-    [SerializeField] private LelwareClientConfig config; // edytowalne w Inspectorze
+    [SerializeField] private LelwareClientConfig config; // editable in the Inspector
     private LelwareClient _client;
 
     private void Awake()
     {
-        var err = config.Validate();        // null = ok, inaczej komunikat
+        var err = config.Validate();        // null = ok, otherwise a message
         if (err != null) { Debug.LogError(err); return; }
         _client = new LelwareClient(config);
     }
 }
 
-// 1. Login — token jest cache'owany w pamięci i dołączany do kolejnych wywołań.
-var login = await client.LoginAsync("user@example.com", "haslo");
+// 1. Login — the token is cached in memory and attached to subsequent calls.
+var login = await client.LoginAsync("user@example.com", "password");
 if (login.Error)
 {
-    Debug.LogError($"Login nieudany ({login.Code}): {login.Message}");
+    Debug.LogError($"Login failed ({login.Code}): {login.Message}");
     return;
 }
 Debug.Log($"PlayerID: {login.Data.PlayerId}");
 
-// (opcjonalnie) zachowaj token między uruchomieniami:
+// (optional) keep the token across runs:
 client.PersistToken();
-// ...przy starcie:  if (client.TryRestoreToken()) { /* pomijamy login */ }
+// ...on startup:  if (client.TryRestoreToken()) { /* skip login */ }
 
-// 2. Stałe endpointy portalu (GENEROWANE z OpenAPI, `using Lelware.Sdk.Generated;`) —
-//    wszystkie zwracają LelwareResult<T>:
+// 2. Fixed portal endpoints (GENERATED from OpenAPI, `using Lelware.Sdk.Generated;`) —
+//    all of them return LelwareResult<T>:
 var settings = await client.GetSettingsAsync();
 if (settings.Ok) foreach (var s in settings.Data) { /* ... */ }
 
 await client.SetPlayerDataAsync("level", 7);
 
 var lvl = await client.GetPlayerDataAsync("level");          // LelwareResult<PlayerDataEntryDto>
-if (lvl.Error && lvl.Code == 404) { /* klucz nie istnieje */ }
-else if (lvl.Ok) { int level = lvl.Data.value.As<int>(); }   // .As<T>() z Lelware.Sdk
+if (lvl.Error && lvl.Code == 404) { /* key does not exist */ }
+else if (lvl.Ok) { int level = lvl.Data.value.As<int>(); }   // .As<T>() from Lelware.Sdk
 
 var all = await client.GetAllPlayerDataAsync();
 await client.DeletePlayerDataAsync("level");
 ```
 
-Każde wywołanie automatycznie:
-- ustawia `Is-Client: api-client`,
-- dołącza `Authorization: Bearer <token>` (po loginie),
-- wysyła `X-Device-Id`, jeśli podano `deviceId` w configu.
+Every call automatically:
+- sets `Is-Client: api-client`,
+- attaches `Authorization: Bearer <token>` (after login),
+- sends `X-Device-Id` if `deviceId` was provided in the config.
 
-## Obsługa błędów (bez wyjątków)
+## Error handling (no exceptions)
 
-SDK **nigdy nie rzuca wyjątków** na powierzchni API. Każde wywołanie zwraca
-`LelwareResult` (warianty bez body, np. `SetPlayerData`/`Delete`) albo
-`LelwareResult<T>` (z payloadem w `Data`). Pola:
+The SDK **never throws** at the API surface. Every call returns a `LelwareResult`
+(bodyless variants, e.g. `SetPlayerData`/`Delete`) or a `LelwareResult<T>` (with the
+payload in `Data`). Fields:
 
-- `Error` (`bool`) — `true` dla dowolnego niepowodzenia,
-- `Code` (`long`) — status HTTP, albo `0` dla błędu transportu / anulowania / błędu
-  serializacji przed wysłaniem,
-- `Message` (`string`) — opis błędu (`null` przy sukcesie),
-- `RawBody` (`string`) — surowe body odpowiedzi (np. terse error z portalu),
-- `Ok` — odwrotność `Error`; `IsAuthError` — `true` dla 401/403,
-- `Data` (tylko `LelwareResult<T>`) — zdeserializowany payload, `default` przy błędzie
-  lub pustym 2xx.
+- `Error` (`bool`) — `true` for any failure,
+- `Code` (`long`) — HTTP status, or `0` for a transport error / cancellation / a
+  serialization error before sending,
+- `Message` (`string`) — error description (`null` on success),
+- `RawBody` (`string`) — raw response body (e.g. a terse portal error),
+- `Ok` — the inverse of `Error`; `IsAuthError` — `true` for 401/403,
+- `Data` (only on `LelwareResult<T>`) — the deserialized payload, `default` on error
+  or an empty 2xx.
 
-`Error == true` zbiera trzy przypadki: błąd transportu (`Code == 0`), status spoza 2xx
-(`Code` = status, `RawBody` = treść błędu) oraz poprawne 2xx z body, którego nie dało
-się sparsować (`Code` = status 2xx, ale `Error == true`, a powód w `Message`).
+`Error == true` covers three cases: a transport error (`Code == 0`), a non-2xx status
+(`Code` = status, `RawBody` = error body), and a valid 2xx with a body that could not be
+parsed (`Code` = a 2xx status, but `Error == true`, with the reason in `Message`).
 
-## Generowanie z portalu (OpenAPI) — główny tryb
+## Generating from the portal (OpenAPI) — the main mode
 
-Portal wystawia **jeden globalny dokument OpenAPI 3** dla całego client API
-(`GET /api/sdk/OpenApi`), z którego SDK generuje wszystkie wywołania. **Stały ręczny
-jest tylko `Authentication`** (login + token); dodatkowo `Storage` (multipart presigned)
-ma własny ręczny moduł. Cała reszta — statyczne endpointy (`GetSettings`, player-data
-CRUD) i **route'y wszystkich skryptów ze wszystkich projektów** (unia distinct) — jest
-generowana dynamicznie.
+The portal exposes **one global OpenAPI 3 document** for the entire client API
+(`GET /api/sdk/OpenApi`), from which the SDK generates all calls. **The only permanent
+hand-written part is `Authentication`** (login + token); additionally `Storage` (multipart
+presigned) has its own hand-written module. Everything else — static endpoints
+(`GetSettings`, player-data CRUD) and **the routes of all scripts across all projects**
+(a distinct union) — is generated dynamically.
 
-1. W portalu ustaw API key w `appsettings` (`Api:Key`).
-2. W Unity: `Tools > Lelware > Generate SDK from Portal` → podaj Base URL + sekret →
-   *Fetch schema & generate*. Zapisuje `Assets/Lelware/Generated/LelwarePortalApi.Generated.cs`.
+1. In the portal, set the API key in `appsettings` (`Api:Key`).
+2. In Unity: `Tools > Lelware > Generate SDK from Portal` → provide the Base URL + secret →
+   *Fetch schema & generate*. It writes `Assets/Lelware/Generated/LelwarePortalApi.Generated.cs`.
 
 ```csharp
 using Lelware.Sdk.Generated;
 
 var all = await client.GetAllPlayerDataAsync();          // List<PlayerDataEntryDto>
 var s   = await client.GetSettingsAsync();               // List<ProjectSetting>
-var r   = await client.ScriptExampleAsync(new { input = "x" }); // skrypt 'example'
+var r   = await client.ScriptExampleAsync(new { input = "x" }); // script 'example'
 ```
 
-Uwagi:
-- `projectId` **nie** jest argumentem metody — bierze się z `LelwareClient.ProjectId`
-  (seedowane z configu, zmienialne w runtime), więc jeden wygenerowany SDK obsługuje każdy
-  projekt (route, którego dany projekt nie ma, zwróci 404 w runtime).
-- Generują się **wszystkie** endpointy pod `/api/...` poza `Authentication` (ręczny login)
-  i `Storage` (ręczny multipart). To obejmuje endpointy spoza schematu `api/{projectId}/...` —
-  np. Clearwater `api/clearwater/tiles/{x}/{y}/{z}.vector`. Pozostałe path‑paramy (tu `x/y/z`)
-  stają się argumentami metody; `projectId`/`pid` zawsze idą z clienta.
-- Endpointy zwracające bajty (np. kafelki Clearwater, `application/x-protobuf`) generują się
-  jako `LelwareResult<byte[]>` (dane w `.Data`); JSON → `LelwareResult<T>`; puste 2xx →
-  `LelwareResult`. Żeby binarny content wyszedł w OpenAPI, akcja musi go zadeklarować
+Notes:
+- `projectId` is **not** a method argument — it comes from `LelwareClient.ProjectId`
+  (seeded from the config, changeable at runtime), so one generated SDK serves every
+  project (a route that a given project doesn't have returns 404 at runtime).
+- **All** endpoints under `/api/...` are generated except `Authentication` (hand-written login)
+  and `Storage` (hand-written multipart). This includes endpoints outside the
+  `api/{projectId}/...` schema — e.g. Clearwater's `api/clearwater/tiles/{x}/{y}/{z}.vector`.
+  The remaining path params (here `x/y/z`) become method arguments; `projectId`/`pid` always
+  come from the client.
+- Endpoints returning bytes (e.g. Clearwater tiles, `application/x-protobuf`) are generated
+  as `LelwareResult<byte[]>` (data in `.Data`); JSON → `LelwareResult<T>`; empty 2xx →
+  `LelwareResult`. For binary content to appear in OpenAPI, the action must declare it
   (`[Produces(...)]` + `[ProducesResponseType(typeof(byte[]), 200)]`).
-- Skrypty nie mają schemy parametrów po stronie serwera, więc ich request/response są
-  **luźno typowane** (`object`). Żeby je otypować — patrz manifest niżej.
-- Endpoint schemy jest chroniony API key'em (`X-Api-Key`), porównywanym w stałym czasie
-  z `Api:Key`. Bez skonfigurowanego klucza endpoint jest zamknięty (fail-safe).
+- Scripts have no parameter schema on the server side, so their request/response are
+  **loosely typed** (`object`). To type them — see the manifest below.
+- The schema endpoint is protected by an API key (`X-Api-Key`), compared in constant time
+  against `Api:Key`. Without a configured key the endpoint is closed (fail-safe).
 
-## Otypowanie skryptów manifestem (opcjonalne)
+## Typing scripts with a manifest (optional)
 
-Custom skrypty (`api/{pid}/RunScript/{route}`) nie mają statycznej schemy po stronie
-serwera — skrypt czyta surowy JSON. Dlatego dla **wybranych** skryptów, którym chcesz dać
-mocne typy request/response, **opisujesz kształt w manifeście JSON**, a generator emituje
-z niego typowane klasy i metody wywołań. (Nazwy metod różnią się od trybu portalowego —
-tam `Script{Route}Async`, tu `{Name}Async` — więc nie kolidują, dopóki sam nie nadasz
-tej samej nazwy.)
+Custom scripts (`api/{pid}/RunScript/{route}`) have no static schema on the server side —
+the script reads raw JSON. So for **selected** scripts that you want to give strong
+request/response types, you **describe the shape in a JSON manifest**, and the generator
+emits typed classes and call methods from it. (Method names differ from the portal mode —
+there it's `Script{Route}Async`, here it's `{Name}Async` — so they don't collide unless you
+give one the same name yourself.)
 
-1. `Tools > Lelware > Create Sample Schema` — tworzy `Assets/Lelware/lelware-sdk.json`.
-2. Edytuj manifest (przykład):
+1. `Tools > Lelware > Create Sample Schema` — creates `Assets/Lelware/lelware-sdk.json`.
+2. Edit the manifest (example):
 
 ```json
 {
@@ -167,10 +168,10 @@ tej samej nazwy.)
 }
 ```
 
-3. `Tools > Lelware > Generate SDK` — zapisuje
+3. `Tools > Lelware > Generate SDK` — writes
    `Assets/Lelware/Generated/LelwareSdk.Generated.cs`.
 
-Wygenerowane wywołania (extension methods na `LelwareClient`):
+Generated calls (extension methods on `LelwareClient`):
 
 ```csharp
 using Lelware.Sdk.Generated;
@@ -180,24 +181,24 @@ if (res.Ok) Debug.Log($"ok: {res.Data.ok}");
 var items = await client.ListItemsAsync(new ListItemsRequest { page = 0 });
 ```
 
-### Pola manifestu
+### Manifest fields
 
-- `types[]` — wielokrotnego użytku DTO (`name`, `fields`).
+- `types[]` — reusable DTOs (`name`, `fields`).
 - `endpoints[]`:
-  - `name` — metoda `{Name}Async`, klasy `{Name}Request` / `{Name}Response`.
-  - `route` — segment `RunScript/{route}`.
-  - `method` — `POST` (body JSON) lub `GET` (query string).
-  - `request` / `response` — albo `{ "type": "..." }` (użyj istniejącego typu), albo
-    `{ "fields": [...] }` (wygeneruj klasę). Pominięty `request` = metoda bez parametru.
-- `fields[]` — `name` (nazwa pola C# i JSON), `type` (dowolny typ C#, np. `int`,
-  `List<Foo>`, `Foo[]`), opcjonalnie `json` (inna nazwa na drucie → `[JsonProperty]`).
+  - `name` — the `{Name}Async` method, the `{Name}Request` / `{Name}Response` classes.
+  - `route` — the `RunScript/{route}` segment.
+  - `method` — `POST` (JSON body) or `GET` (query string).
+  - `request` / `response` — either `{ "type": "..." }` (use an existing type), or
+    `{ "fields": [...] }` (generate a class). An omitted `request` = a parameterless method.
+- `fields[]` — `name` (the C# and JSON field name), `type` (any C# type, e.g. `int`,
+  `List<Foo>`, `Foo[]`), optionally `json` (a different name on the wire → `[JsonProperty]`).
 
-Wygenerowane klasy są `partial` — możesz je dopisywać w osobnym pliku bez utraty zmian
-przy regeneracji.
+Generated classes are `partial` — you can extend them in a separate file without losing
+changes on regeneration.
 
-## Własna schema bez generatora (escape hatch)
+## Custom schema without the generator (escape hatch)
 
-Dla wszystkiego, czego nie ma w manifeście — własne klasy + generyczne wywołanie:
+For anything not in the manifest — your own classes + a generic call:
 
 ```csharp
 class MyReq  { public int a; public string b; }
@@ -205,20 +206,21 @@ class MyResp { public bool ok; public string msg; }
 
 var r = await client.CallScriptAsync<MyReq, MyResp>("myRoute", new MyReq { a = 1, b = "x" });
 if (r.Ok) Debug.Log(r.Data.msg);
-// GET wariant:
+// GET variant:
 var r2 = await client.GetScriptAsync<MyResp>("myRoute",
     new Dictionary<string,string> { ["x"] = "1" });
 ```
 
-## Storage (assety per-player, multipart)
+## Storage (per-player assets, multipart)
 
-Pliki binarne trzymane są w object storage (MinIO/S3) w izolowanej przestrzeni
-playera (`{projectId}/players/{playerId}/...`). Upload idzie **multipart, bezpośrednio do
-storage** przez presigned URL-e (omija portal, limity IIS i 100 MB Cloudflare); portal tylko
-podpisuje URL-e i finalizuje upload. Wszystko zwraca `LelwareResult` (bez wyjątków):
+Binary files are kept in object storage (MinIO/S3) in the player's isolated space
+(`{projectId}/players/{playerId}/...`). Uploads go **multipart, directly to storage**
+via presigned URLs (bypassing the portal, IIS limits, and Cloudflare's 100 MB cap); the
+portal only signs the URLs and finalizes the upload. Everything returns a `LelwareResult`
+(no exceptions):
 
 ```csharp
-// upload (chunkowany automatycznie, domyślnie 8 MiB/part):
+// upload (chunked automatically, 8 MiB/part by default):
 byte[] bytes = System.IO.File.ReadAllBytes(path);
 var up = await client.UploadAssetAsync("avatars/hero.png", bytes, contentType: "image/png");
 if (up.Error) Debug.LogError($"upload ({up.Code}): {up.Message}");
@@ -233,39 +235,40 @@ if (list.Ok) foreach (var o in list.Data.Objects) Debug.Log($"{o.Name} ({o.Size}
 await client.DeleteAssetAsync("avatars/hero.png");
 ```
 
-### Progress (pollowalny, bez callbacków)
+### Progress (pollable, no callbacks)
 
-Upload i download przyjmują opcjonalny `LelwareTransferProgress`. SDK **niczego nie pushuje**
-(brak callbacków co klatkę, coroutine ani MonoBehaviour) — trzyma tylko wskaźnik na żądanie
-aktualnie w locie, a Ty **odczytujesz** `Fraction` / `TransferredBytes` / `IsComplete` kiedy
-chcesz (zwykle w swoim `Update()`, na main thread). Postęp jest hybrydowy: ukończone party +
-bajtowy `uploadProgress` party w locie (party istnieją głównie po to, by duży plik przeszedł
-przez limit 100 MB Cloudflare).
+Upload and download take an optional `LelwareTransferProgress`. The SDK **pushes nothing**
+(no per-frame callbacks, no coroutine, no MonoBehaviour) — it only holds a pointer to the
+request currently in flight, and you **read** `Fraction` / `TransferredBytes` / `IsComplete`
+whenever you want (typically in your own `Update()`, on the main thread). Progress is hybrid:
+completed parts + the byte-level `uploadProgress` of the part in flight (parts exist mainly so
+a large file gets through Cloudflare's 100 MB cap).
 
 ```csharp
 var progress = new LelwareTransferProgress();
 var task = client.UploadAssetAsync("avatars/hero.png", bytes, contentType: "image/png", progress: progress);
 
-// gdzieś w Update() / własnej pętli, na main thread:
+// somewhere in Update() / your own loop, on the main thread:
 slider.value = progress.Fraction;          // 0..1
 label.text = $"{progress.TransferredBytes}/{progress.TotalBytes} B";
 
 var up = await task;
 if (up.Error) Debug.LogError($"upload ({up.Code}): {up.Message}");
 
-// download — total nieznany do nadejścia nagłówków, wtedy Fraction = downloadProgress Unity:
+// download — the total is unknown until the headers arrive, until then Fraction = Unity's downloadProgress:
 var dlProgress = new LelwareTransferProgress();
 var dl = await client.DownloadAssetAsync("avatars/hero.png", progress: dlProgress);
 ```
 
-Izolacja: playerId bierze portal z bearer tokenu (nigdy z requestu) — gracz operuje wyłącznie
-na swojej przestrzeni. Wymaga skonfigurowanego `Storage:*` po stronie portalu.
+Isolation: the portal takes the playerId from the bearer token (never from the request) — a
+player operates only on their own space. Requires `Storage:*` to be configured on the portal side.
 
-## Uwagi
+## Notes
 
-- Warstwa sieciowa to `UnityWebRequest` opakowany w awaiter (`async/await`, działa na
-  WebGL). Kontynuacja po `await` wraca na main thread.
-- Login zwraca dwuczęściowy body (`AccessTokenResponse` + `||Response:{...}`); SDK
-  rozdziela to za Ciebie (`LoginResult.Token` / `LoginResult.Payload`).
-- `GetSettings` po stronie portalu wymaga segmentu route, choć go ignoruje — SDK wysyła
-  placeholder, nie musisz nic robić.
+- The network layer is `UnityWebRequest` wrapped in an awaiter (`async/await`, works on
+  WebGL). Continuation after `await` returns to the main thread.
+- Login returns a two-part body (`AccessTokenResponse` + `||Response:{...}`); the SDK splits
+  it for you (`LoginResult.Token` / `LoginResult.Payload`).
+- `GetSettings` on the portal side requires a route segment, even though it ignores it — the
+  SDK sends a placeholder, so you don't have to do anything.
+```
