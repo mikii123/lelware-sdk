@@ -1,6 +1,6 @@
 {
   "name": "com.lelware.sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "Lelware SDK",
   "description": "Unity client SDK for the LelwarePortal client API. Handles bearer-token login (with the Is-Client header), token caching, and typed request/response classes generated from a JSON schema manifest.",
   "unity": "2021.3",
