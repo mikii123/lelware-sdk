@@ -9,10 +9,17 @@ using UnityEngine.Networking;
 namespace Lelware.Sdk
 {
     /// <summary>
-    ///     Client helpers for the portal's per-player object storage. Large binaries are
-    ///     uploaded via S3 multipart: the portal hands out a presigned PUT URL per part, the
-    ///     client uploads each part DIRECTLY to storage (bypassing the portal, IIS limits and
-    ///     Cloudflare's 100 MB per-request cap), then the portal finalises the upload.
+    ///     Client helpers for the portal's object storage. Two namespaces:
+    ///     <list type="bullet">
+    ///       <item><b>Per-player</b> (<c>UploadAsset</c>/<c>DownloadAsset</c>/<c>ListAssets</c>/
+    ///       <c>DeleteAsset</c>) — the caller's own isolated namespace, read+write. Large binaries
+    ///       are uploaded via S3 multipart: the portal hands out a presigned PUT URL per part, the
+    ///       client uploads each part DIRECTLY to storage (bypassing the portal, IIS limits and
+    ///       Cloudflare's 100 MB per-request cap), then the portal finalises the upload.</item>
+    ///       <item><b>Per-project SHARED</b> (<c>SharedAssetExists</c>/<c>DownloadSharedAsset</c>/
+    ///       <c>ListSharedAssets</c>) — a namespace global to the project, READ-ONLY for clients
+    ///       (writes happen server-side).</item>
+    ///     </list>
     ///
     ///     <para>Everything here is exception-free — each method returns a
     ///     <see cref="LelwareResult" /> / <see cref="LelwareResult{T}" /> like the rest of the
@@ -184,6 +191,72 @@ namespace Lelware.Sdk
             return client.SendAsync(UnityWebRequest.kHttpVerbPOST, "Storage/DeleteAsset", null, body, ct);
         }
 
+        // ===== Per-project SHARED storage (read-only) ==========================
+        // A SECOND namespace, {projectId}/shared/..., that is GLOBAL to the project rather than
+        // isolated per player (the methods above are per-player). It's for assets that are
+        // identical for every viewer — a server-prefetched / derived cache. Clients may only
+        // READ it: writes happen server-side (e.g. the portal's pixiv super-like cache job), so
+        // there are deliberately no shared Upload/Delete helpers here.
+
+        /// <summary>True when an object exists under <paramref name="name" /> in the project's shared storage.</summary>
+        public static async Task<LelwareResult<bool>> SharedAssetExistsAsync(
+            this LelwareClient client, string name, CancellationToken ct = default)
+        {
+            var res = await client.SendAsync<ExistsResponse>(
+                UnityWebRequest.kHttpVerbGET, "SharedStorage/Exists?name=" + Uri.EscapeDataString(name), null, null, ct);
+            return new LelwareResult<bool>
+            {
+                Error = res.Error,
+                Code = res.Code,
+                Message = res.Message,
+                RawBody = res.RawBody,
+                Data = res.Data?.Exists ?? false
+            };
+        }
+
+        /// <summary>
+        ///     Download a shared object's raw bytes (resolves a presigned GET URL, then fetches it
+        ///     directly from storage — same off-portal path as <see cref="DownloadAssetAsync" />).
+        ///     Pass a <see cref="LelwareTransferProgress" /> to poll the download.
+        /// </summary>
+        public static async Task<LelwareResult<byte[]>> DownloadSharedAssetAsync(
+            this LelwareClient client, string name, LelwareTransferProgress progress = null, CancellationToken ct = default)
+        {
+            var urlRes = await client.SendAsync<UrlResponse>(
+                UnityWebRequest.kHttpVerbGET, "SharedStorage/DownloadUrl?name=" + Uri.EscapeDataString(name), null, null, ct);
+            if (urlRes.Error)
+            {
+                return new LelwareResult<byte[]> { Error = true, Code = urlRes.Code, Message = urlRes.Message, RawBody = urlRes.RawBody };
+            }
+
+            var (bytes, code, err) = await GetBytesAsync(client, urlRes.Data?.Url, progress, ct);
+            if (err == null)
+            {
+                progress?.Complete();
+            }
+
+            return new LelwareResult<byte[]>
+            {
+                Error = err != null,
+                Code = code,
+                Message = err,
+                Data = bytes
+            };
+        }
+
+        /// <summary>List the project's shared objects (one page; pass the returned token for more).</summary>
+        public static Task<LelwareResult<ListAssetsResponse>> ListSharedAssetsAsync(
+            this LelwareClient client, string continuationToken = null, CancellationToken ct = default)
+        {
+            var action = "SharedStorage/ListAssets";
+            if (!string.IsNullOrEmpty(continuationToken))
+            {
+                action += "?continuationToken=" + Uri.EscapeDataString(continuationToken);
+            }
+
+            return client.SendAsync<ListAssetsResponse>(UnityWebRequest.kHttpVerbGET, action, null, null, ct);
+        }
+
         // --- raw transport for the presigned (off-portal) URLs -----------------
         // These talk directly to storage, so they carry NO portal headers (Is-Client /
         // Authorization) — the presigned URL is self-authenticating and extra signed
@@ -324,6 +397,12 @@ namespace Lelware.Sdk
         public sealed class UrlResponse
         {
             [JsonProperty("url")] public string Url;
+        }
+
+        [Serializable]
+        public sealed class ExistsResponse
+        {
+            [JsonProperty("exists")] public bool Exists;
         }
 
         [Serializable]

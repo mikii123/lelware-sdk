@@ -270,6 +270,31 @@ var dl = await client.DownloadAssetAsync("avatars/hero.png", progress: dlProgres
 Isolation: the portal takes the playerId from the bearer token (never from the request) — a
 player operates only on their own space. Requires `Storage:*` to be configured on the portal side.
 
+## Storage (per-project shared assets, read-only)
+
+A second namespace, `{projectId}/shared/...`, is **global to the project** (no per-player
+segment) — for assets that are identical for every viewer, e.g. a server-prefetched/derived
+cache. Clients can only **read** it; writes happen server-side. Same `LelwareResult` shape, same
+off-portal presigned download path as the per-player API:
+
+```csharp
+// exists?
+var ex = await client.SharedAssetExistsAsync("img-original/.../145897388_p0.jpg");
+if (ex.Ok && ex.Data) { /* cached on the portal */ }
+
+// download (presigned GET, optional progress):
+var dl = await client.DownloadSharedAssetAsync("img-original/.../145897388_p0.jpg");
+if (dl.Ok) { var raw = dl.Data; /* ... */ }
+
+// list one page:
+var list = await client.ListSharedAssetsAsync();
+if (list.Ok) foreach (var o in list.Data.Objects) Debug.Log($"{o.Name} ({o.Size} B)");
+```
+
+There are deliberately no shared `Upload`/`Delete` helpers — the shared namespace is written
+only by server-side jobs (e.g. the portal's pixiv super-like cache). Requires `Storage:*` on the
+portal side; the caller must be a player of the project.
+
 ## Notes
 
 - The network layer is `UnityWebRequest` wrapped in an awaiter (`async/await`, works on
