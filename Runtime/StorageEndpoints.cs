@@ -106,7 +106,7 @@ namespace Lelware.Sdk
                 // The handle tracks this part live while it uploads; the byte accounting is
                 // promoted to "finished" only after the part succeeds (below). There is no await
                 // between PutAsync returning and AddCompleted, so a poller never sees a gap.
-                var (etag, err) = await PutAsync(part.Url, chunk, progress, ct);
+                var (etag, err) = await PutAsync(client, part.Url, chunk, progress, ct);
                 if (err != null)
                 {
                     // Best-effort cleanup so we don't leave dangling staged parts.
@@ -149,7 +149,7 @@ namespace Lelware.Sdk
                 return new LelwareResult<byte[]> { Error = true, Code = urlRes.Code, Message = urlRes.Message, RawBody = urlRes.RawBody };
             }
 
-            var (bytes, code, err) = await GetBytesAsync(urlRes.Data?.Url, progress, ct);
+            var (bytes, code, err) = await GetBytesAsync(client, urlRes.Data?.Url, progress, ct);
             if (err == null)
             {
                 progress?.Complete();
@@ -189,13 +189,17 @@ namespace Lelware.Sdk
         // Authorization) — the presigned URL is self-authenticating and extra signed
         // headers would only risk breaking the signature.
 
-        private static async Task<(string etag, string error)> PutAsync(string url, byte[] body, LelwareTransferProgress progress, CancellationToken ct)
+        private static async Task<(string etag, string error)> PutAsync(LelwareClient client, string url, byte[] body, LelwareTransferProgress progress, CancellationToken ct)
         {
             using var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPUT)
             {
                 uploadHandler = new UploadHandlerRaw(body),
                 downloadHandler = new DownloadHandlerBuffer()
             };
+
+            // Off-portal byte transfer (presigned S3 PUT). Log the part size, never the URL —
+            // a presigned URL embeds the signature, so it's treated as a credential.
+            client.LogRequest(UnityWebRequest.kHttpVerbPUT, "<presigned storage URL>", $"<{body.Length} bytes>");
 
             using var registration = ct.CanBeCanceled ? ct.Register(() => request.Abort()) : default;
 
@@ -213,6 +217,8 @@ namespace Lelware.Sdk
 
             if (ct.IsCancellationRequested)
             {
+                client.LogResponse(UnityWebRequest.kHttpVerbPUT, "<presigned storage URL>", error: true,
+                    code: 0, message: "cancelled", responseBody: null);
                 return (null, "Upload was cancelled.");
             }
 
@@ -223,14 +229,18 @@ namespace Lelware.Sdk
 #endif
             if (!ok)
             {
+                client.LogResponse(UnityWebRequest.kHttpVerbPUT, "<presigned storage URL>", error: true,
+                    request.responseCode, request.error, null);
                 return (null, $"Part upload failed ({request.responseCode}): {request.error}");
             }
 
+            client.LogResponse(UnityWebRequest.kHttpVerbPUT, "<presigned storage URL>", error: false,
+                request.responseCode, null, null);
             // S3 returns the part's ETag in the response header; it's required on complete.
             return (request.GetResponseHeader("ETag"), null);
         }
 
-        private static async Task<(byte[] bytes, long code, string error)> GetBytesAsync(string url, LelwareTransferProgress progress, CancellationToken ct)
+        private static async Task<(byte[] bytes, long code, string error)> GetBytesAsync(LelwareClient client, string url, LelwareTransferProgress progress, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(url))
             {
@@ -238,6 +248,10 @@ namespace Lelware.Sdk
             }
 
             using var request = UnityWebRequest.Get(url);
+
+            // Off-portal byte transfer (presigned S3 GET). URL hidden — it carries the signature.
+            client.LogRequest(UnityWebRequest.kHttpVerbGET, "<presigned storage URL>", null);
+
             using var registration = ct.CanBeCanceled ? ct.Register(() => request.Abort()) : default;
 
             // A single GET — no total known up front, so the handle reports Unity's own
@@ -254,6 +268,8 @@ namespace Lelware.Sdk
 
             if (ct.IsCancellationRequested)
             {
+                client.LogResponse(UnityWebRequest.kHttpVerbGET, "<presigned storage URL>", error: true,
+                    code: 0, message: "cancelled", responseBody: null);
                 return (null, 0, "Download was cancelled.");
             }
 
@@ -262,8 +278,12 @@ namespace Lelware.Sdk
 #else
             var ok = !request.isHttpError && !request.isNetworkError;
 #endif
+            var data = ok ? request.downloadHandler.data : null;
+            client.LogResponse(UnityWebRequest.kHttpVerbGET, "<presigned storage URL>", error: !ok,
+                request.responseCode, ok ? null : request.error,
+                ok ? $"<{data?.Length ?? 0} bytes>" : null);
             return ok
-                ? (request.downloadHandler.data, request.responseCode, null)
+                ? (data, request.responseCode, null)
                 : (null, request.responseCode, $"Download failed ({request.responseCode}): {request.error}");
         }
 

@@ -49,6 +49,14 @@ namespace Lelware.Sdk
         public LelwareClientConfig Config => _config;
 
         /// <summary>
+        ///     Sink for the request log (see <see cref="LelwareClientConfig.EnableRequestLogging" />).
+        ///     Defaults to <see cref="Debug.Log" />; assign your own (e.g. to route into an in-game
+        ///     console or a file) or set it to a no-op to silence a specific instance. Only invoked
+        ///     when logging is enabled in the config, so leaving it as-is is harmless in a shipped build.
+        /// </summary>
+        public Action<string> Logger { get; set; } = Debug.Log;
+
+        /// <summary>
         ///     The project id used to build EVERY request URL (<c>/api/{ProjectId}/...</c>). It is
         ///     never passed per call — generated methods, the escape hatch, and login all read it
         ///     from here — so a single client serves whichever project this points at. Seeded from
@@ -307,6 +315,64 @@ namespace Lelware.Sdk
             return result;
         }
 
+        // --- Request logging ---------------------------------------------------
+
+        /// <summary>
+        ///     Logs an outgoing request, if <see cref="LelwareClientConfig.EnableRequestLogging" /> is on.
+        ///     Emits verb + URL, the headers it carries (the bearer token is masked unless
+        ///     <see cref="LelwareClientConfig.LogRequestBodies" /> is on), and the body only when
+        ///     <see cref="LelwareClientConfig.LogRequestBodies" /> is also on — bodies may carry the
+        ///     login password, so they're opt-in. Guarded so it's a no-op (and allocation-free) on the
+        ///     hot path when logging is disabled.
+        /// </summary>
+        internal void LogRequest(string verb, string url, string body,
+            IEnumerable<KeyValuePair<string, string>> headers = null)
+        {
+            if (!_config.EnableRequestLogging || Logger == null)
+            {
+                return;
+            }
+
+            var line = $"[Lelware] → {verb} {url}";
+            if (headers != null)
+            {
+                foreach (var h in headers)
+                {
+                    line += $"\n  {h.Key}: {h.Value}";
+                }
+            }
+
+            if (_config.LogRequestBodies && !string.IsNullOrEmpty(body))
+            {
+                line += $"\n  body: {body}";
+            }
+
+            Logger(line);
+        }
+
+        /// <summary>
+        ///     Logs the outcome of a request (the same arrow notation, reversed). Reports the status
+        ///     code and, on failure, the transport error; includes the response body only when
+        ///     <see cref="LelwareClientConfig.LogRequestBodies" /> is on. No-op when logging is disabled.
+        /// </summary>
+        internal void LogResponse(string verb, string url, bool error, long code, string message, string responseBody)
+        {
+            if (!_config.EnableRequestLogging || Logger == null)
+            {
+                return;
+            }
+
+            var line = error
+                ? $"[Lelware] ← {verb} {url} FAILED ({code}): {message}"
+                : $"[Lelware] ← {verb} {url} OK ({code})";
+            if (_config.LogRequestBodies && !string.IsNullOrEmpty(responseBody))
+            {
+                line += $"\n  body: {responseBody}";
+            }
+
+            Logger(line);
+        }
+
         // --- HTTP plumbing -----------------------------------------------------
 
         private string BuildUrl(string action, string dataKey)
@@ -358,7 +424,8 @@ namespace Lelware.Sdk
             {
                 downloadHandler = new DownloadHandlerBuffer()
             };
-            ConfigureRequest(request, body, includeAuth);
+            var headers = ConfigureRequest(request, body, includeAuth);
+            LogRequest(verb, url, body, headers);
 
             // Register cancellation: abort the in-flight request, which completes the op
             // with a Result of ConnectionError so the await below unblocks.
@@ -372,6 +439,7 @@ namespace Lelware.Sdk
             // result rather than throwing OperationCanceledException, keeping the API throw-free.
             if (ct.IsCancellationRequested)
             {
+                LogResponse(verb, url, error: true, code: 0, message: "cancelled", responseBody: null);
                 return new LelwareResult
                 {
                     Error = true, Code = 0, Message = $"{verb} {url} was cancelled.", RawBody = null
@@ -388,6 +456,7 @@ namespace Lelware.Sdk
             if (!ok)
             {
                 // responseCode is 0 for a transport failure that never reached the server.
+                LogResponse(verb, url, error: true, request.responseCode, request.error, responseBody);
                 return new LelwareResult
                 {
                     Error = true,
@@ -397,6 +466,7 @@ namespace Lelware.Sdk
                 };
             }
 
+            LogResponse(verb, url, error: false, request.responseCode, null, responseBody);
             return new LelwareResult
             {
                 Error = false, Code = request.responseCode, Message = null, RawBody = responseBody
@@ -416,7 +486,8 @@ namespace Lelware.Sdk
             {
                 downloadHandler = new DownloadHandlerBuffer()
             };
-            ConfigureRequest(request, body, includeAuth);
+            var headers = ConfigureRequest(request, body, includeAuth);
+            LogRequest(verb, url, body, headers);
 
             using var registration = ct.CanBeCanceled
                 ? ct.Register(() => request.Abort())
@@ -426,6 +497,7 @@ namespace Lelware.Sdk
 
             if (ct.IsCancellationRequested)
             {
+                LogResponse(verb, url, error: true, code: 0, message: "cancelled", responseBody: null);
                 return new LelwareResult<byte[]>
                 {
                     Error = true, Code = 0, Message = $"{verb} {url} was cancelled."
@@ -439,20 +511,26 @@ namespace Lelware.Sdk
 #endif
             if (!ok)
             {
+                var errorBody = request.downloadHandler != null ? request.downloadHandler.text : null;
+                LogResponse(verb, url, error: true, request.responseCode, request.error, errorBody);
                 return new LelwareResult<byte[]>
                 {
                     Error = true,
                     Code = request.responseCode,
                     Message = $"{verb} {url} failed: {request.error}",
-                    RawBody = request.downloadHandler != null ? request.downloadHandler.text : null
+                    RawBody = errorBody
                 };
             }
 
+            var data = request.downloadHandler != null ? request.downloadHandler.data : null;
+            // Binary success: report byte count rather than the (binary) body, which isn't loggable text.
+            LogResponse(verb, url, error: false, request.responseCode, null,
+                _config.LogRequestBodies ? $"<{data?.Length ?? 0} bytes>" : null);
             return new LelwareResult<byte[]>
             {
                 Error = false,
                 Code = request.responseCode,
-                Data = request.downloadHandler != null ? request.downloadHandler.data : null
+                Data = data
             };
         }
 
@@ -461,9 +539,19 @@ namespace Lelware.Sdk
         ///     the optional JSON body, the always-on <c>Is-Client</c> header, the optional device
         ///     header, and (when <paramref name="includeAuth" />) the bearer token. Factored out so
         ///     the header/body contract can never drift between the two transports.
+        ///
+        ///     <para>Returns the headers it set (for the request log), or <c>null</c> when logging is
+        ///     off — building the list only when it'll be used keeps the hot path allocation-free.
+        ///     UnityWebRequest has no read-back of set headers on every platform, so we mirror them
+        ///     into the returned list as we set them — it can't drift from what's actually sent.</para>
         /// </summary>
-        private void ConfigureRequest(UnityWebRequest request, string body, bool includeAuth)
+        private List<KeyValuePair<string, string>> ConfigureRequest(UnityWebRequest request, string body, bool includeAuth)
         {
+            // Only collect headers for the log when logging is actually on.
+            var headers = _config.EnableRequestLogging && Logger != null
+                ? new List<KeyValuePair<string, string>>()
+                : null;
+
             if (_config.TimeoutSeconds > 0)
             {
                 request.timeout = _config.TimeoutSeconds;
@@ -473,22 +561,33 @@ namespace Lelware.Sdk
             {
                 var payload = Encoding.UTF8.GetBytes(body);
                 request.uploadHandler = new UploadHandlerRaw(payload) { contentType = "application/json" };
+                // Content-Type isn't set via SetRequestHeader (it rides on the upload handler), so
+                // record it explicitly for the log to reflect the wire request faithfully.
+                headers?.Add(new KeyValuePair<string, string>("Content-Type", "application/json"));
             }
 
             // Always identify as an API client.
             request.SetRequestHeader(ClientHeaderName, ClientHeaderValue);
+            headers?.Add(new KeyValuePair<string, string>(ClientHeaderName, ClientHeaderValue));
 
             // Optional device id — only sent if the app supplied a stable one.
             if (!string.IsNullOrEmpty(_config.DeviceId))
             {
                 request.SetRequestHeader(DeviceHeaderName, _config.DeviceId);
+                headers?.Add(new KeyValuePair<string, string>(DeviceHeaderName, _config.DeviceId));
             }
 
             // Bearer token on everything except the login call itself.
             if (includeAuth && !string.IsNullOrEmpty(_accessToken))
             {
                 request.SetRequestHeader("Authorization", "Bearer " + _accessToken);
+                // The bearer token is a credential — mask it in the log unless body logging (the
+                // "include sensitive details" switch) is explicitly on.
+                headers?.Add(new KeyValuePair<string, string>("Authorization",
+                    _config.LogRequestBodies ? "Bearer " + _accessToken : "Bearer ***"));
             }
+
+            return headers;
         }
     }
 }

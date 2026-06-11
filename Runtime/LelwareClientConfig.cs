@@ -44,6 +44,14 @@ namespace Lelware.Sdk
         [Tooltip("Per-request network timeout in seconds. 0 = Unity's default.")]
         private int timeoutSeconds = 30;
 
+        [SerializeField]
+        [Tooltip("Log every outgoing request (verb + URL + status) via the client's logger (Debug.Log by default).")]
+        private bool enableRequestLogging;
+
+        [SerializeField]
+        [Tooltip("When request logging is on, also include request/response bodies. Off by default — bodies can be large and may contain credentials (e.g. the login password).")]
+        private bool logRequestBodies;
+
         /// <summary>
         ///     Portal root, e.g. <c>https://portal.lelware.com</c>. The trailing slash is trimmed
         ///     here so URL composition can always assume there isn't one. All endpoints hang off
@@ -80,6 +88,29 @@ namespace Lelware.Sdk
         {
             get => timeoutSeconds;
             set => timeoutSeconds = value;
+        }
+
+        /// <summary>
+        ///     When true, the client logs a line for every outgoing request (verb + URL) and its
+        ///     outcome (status code, or the transport error) through <see cref="LelwareClient.Logger" />
+        ///     (which defaults to <see cref="Debug.Log" />). Off by default so a shipped build is quiet.
+        /// </summary>
+        public bool EnableRequestLogging
+        {
+            get => enableRequestLogging;
+            set => enableRequestLogging = value;
+        }
+
+        /// <summary>
+        ///     When request logging is on, also include the request and response bodies in the log.
+        ///     Off by default on purpose: bodies can be large and may carry sensitive data — most
+        ///     notably the <see cref="LelwareClient.LoginAsync" /> request body contains the plaintext
+        ///     password. Only enable while debugging, and never in a shipped build.
+        /// </summary>
+        public bool LogRequestBodies
+        {
+            get => logRequestBodies;
+            set => logRequestBodies = value;
         }
 
         /// <summary>
