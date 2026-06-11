@@ -11,7 +11,7 @@ The package depends on `com.unity.nuget.newtonsoft-json` (resolved automatically
 the Package Manager). Add this to your Unity project's `Packages/manifest.json`:
 
 ```json
-"com.lelware.sdk": "https://dev.azure.com/.../_git/...?path=/sdk/unity/com.lelware.sdk"
+"com.lelware.sdk": "https://github.com/mikii123/lelware-sdk.git"
 ```
 
 or copy the `com.lelware.sdk/` folder into your project's `Packages/`.
