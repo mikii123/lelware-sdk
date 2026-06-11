@@ -133,6 +133,74 @@ namespace Lelware.Sdk
             return result;
         }
 
+        /// <summary>
+        ///     Registers against <c>api/{pid}/Authentication/Register</c>. The portal's register
+        ///     response is the SAME dual-payload, NOT-valid-JSON-on-its-own shape as login:
+        ///     (optional) <see cref="AccessTokenResponse" /> JSON, then the <c>||Response:</c>
+        ///     marker, then the OnRegister script's payload — with that script's return value
+        ///     verbatim in <see cref="LoginPayload.CustomData" />. We split on the marker and
+        ///     deserialize each half (see <see cref="LoginResult.Parse" />), exactly like login.
+        ///
+        ///     Never throws — same contract as <see cref="LoginAsync" />: a non-2xx, transport
+        ///     failure, malformed body, or an OnRegister <see cref="LoginPayload.Error" /> all
+        ///     come back as a <see cref="LelwareResult{LoginResult}" /> with <c>Error == true</c>.
+        ///     Unlike login, a token is NOT required: if the portal issues one (register auto-
+        ///     logs-in), it is cached for subsequent calls; if it doesn't, the call still succeeds
+        ///     with only <see cref="LoginResult.Payload" /> populated. The parsed
+        ///     <see cref="LoginResult" /> is in <see cref="LelwareResult{T}.Data" /> on success.
+        /// </summary>
+        public async Task<LelwareResult<LoginResult>> RegisterAsync(string email, string password, CancellationToken ct = default)
+        {
+            var url = $"{_config.BaseUrl}/api/{Uri.EscapeDataString(ProjectId ?? string.Empty)}/Authentication/Register";
+            var bodyJson = JsonConvert.SerializeObject(new { Email = email, Password = password });
+
+            // Like login, register runs WITHOUT a bearer token (we don't have one yet) but still
+            // carries Is-Client so the portal treats us as an API client.
+            var raw = await SendRawAsync(UnityWebRequest.kHttpVerbPOST, url, bodyJson, includeAuth: false, ct);
+
+            var result = new LelwareResult<LoginResult>
+            {
+                Error = raw.Error, Code = raw.Code, Message = raw.Message, RawBody = raw.RawBody
+            };
+            if (raw.Error)
+            {
+                return result;
+            }
+
+            LoginResult register;
+            try
+            {
+                register = LoginResult.Parse(raw.RawBody);
+            }
+            catch (Exception ex)
+            {
+                result.Error = true;
+                result.Message = "Failed to parse register response: " + ex.Message;
+                return result;
+            }
+
+            // An OnRegister script can report a failure via the payload's Error field even on a
+            // 2xx (e.g. a duplicate account or a validation rule the script enforces) — surface
+            // it, but keep the (successful) status code so callers can still inspect it.
+            if (!string.IsNullOrEmpty(register.Payload?.Error))
+            {
+                result.Error = true;
+                result.Message = register.Payload.Error;
+                return result;
+            }
+
+            // Register MAY auto-login. Cache the token only if one actually came back; its
+            // absence is NOT an error here (the whole point that sets register apart from login).
+            if (register.Token != null && !string.IsNullOrEmpty(register.Token.AccessToken))
+            {
+                _accessToken = register.Token.AccessToken;
+                _expiresAtUtc = register.ExpiresAtUtc;
+            }
+
+            result.Data = register;
+            return result;
+        }
+
         /// <summary>Drops the cached token. The next call will be unauthenticated (and likely 401).</summary>
         public void Logout()
         {

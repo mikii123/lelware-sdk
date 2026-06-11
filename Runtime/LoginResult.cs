@@ -19,10 +19,11 @@ namespace Lelware.Sdk
     }
 
     /// <summary>
-    ///     The portal-specific half appended after the <c>||Response:</c> marker on login.
+    ///     The portal-specific half appended after the <c>||Response:</c> marker on BOTH login
+    ///     and register — the two endpoints share this exact dual-payload wire shape.
     ///     <see cref="CustomData" /> is the JSON-serialized return value of the project's
-    ///     OnLogin script (if any), passed through verbatim — deserialize it yourself if the
-    ///     project defines one.
+    ///     OnLogin / OnRegister script (if any), passed through verbatim — deserialize it
+    ///     yourself if the project defines one.
     /// </summary>
     [Serializable]
     public sealed class LoginPayload
@@ -33,9 +34,11 @@ namespace Lelware.Sdk
     }
 
     /// <summary>
-    ///     Outcome of <see cref="LelwareClient.LoginAsync" />: both halves of the portal's
-    ///     dual-payload login response, plus the absolute UTC instant the access token
-    ///     expires (derived from <c>expiresIn</c> at the moment of login).
+    ///     Outcome of <see cref="LelwareClient.LoginAsync" /> AND
+    ///     <see cref="LelwareClient.RegisterAsync" />: both halves of the portal's dual-payload
+    ///     response, plus the absolute UTC instant the access token expires (derived from
+    ///     <c>expiresIn</c> at the moment of the call). On register the <see cref="Token" /> half
+    ///     may legitimately be absent (register need not auto-login); on login it is required.
     /// </summary>
     public sealed class LoginResult
     {

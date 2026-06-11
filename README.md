@@ -55,6 +55,13 @@ if (login.Error)
 }
 Debug.Log($"PlayerID: {login.Data.PlayerId}");
 
+// 1b. Register — same dual-payload shape as login. The OnRegister script's return value
+//     arrives (verbatim) in Data.Payload.CustomData; if register auto-logs-in, the token
+//     is cached too (otherwise only the payload is populated).
+var reg = await client.RegisterAsync("new@example.com", "password");
+if (reg.Error) { Debug.LogError($"Register failed ({reg.Code}): {reg.Message}"); return; }
+string custom = reg.Data.Payload?.CustomData; // OnRegister output, deserialize if needed
+
 // (optional) keep the token across runs:
 client.PersistToken();
 // ...on startup:  if (client.TryRestoreToken()) { /* skip login */ }
@@ -267,8 +274,10 @@ player operates only on their own space. Requires `Storage:*` to be configured o
 
 - The network layer is `UnityWebRequest` wrapped in an awaiter (`async/await`, works on
   WebGL). Continuation after `await` returns to the main thread.
-- Login returns a two-part body (`AccessTokenResponse` + `||Response:{...}`); the SDK splits
-  it for you (`LoginResult.Token` / `LoginResult.Payload`).
+- Login **and register** return a two-part body (`AccessTokenResponse` + `||Response:{...}`),
+  which isn't valid JSON on its own; the SDK splits it on the `||Response:` marker for you
+  (`LoginResult.Token` / `LoginResult.Payload`, the OnLogin/OnRegister output in
+  `Payload.CustomData`). Register tolerates a missing token half (it need not auto-login).
 - `GetSettings` on the portal side requires a route segment, even though it ignores it — the
   SDK sends a placeholder, so you don't have to do anything.
 ```
