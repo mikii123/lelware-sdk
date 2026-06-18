@@ -6,7 +6,7 @@ namespace Lelware.Sdk
     /// <summary>
     ///     Connection settings for a <see cref="LelwareClient" />. The two things that never
     ///     change for a given build are the portal base URL and the project ID (the project ID
-    ///     IS the public route segment on the portal — e.g. a GUID, or the literal "Clearwater"),
+    ///     IS the public route segment on the portal — e.g. a GUID, or a fixed human-readable id),
     ///     so they live here rather than being threaded through every call.
     ///
     ///     <para>This type is designed to be authored two ways:</para>
@@ -32,7 +32,7 @@ namespace Lelware.Sdk
         private string baseUrl = "https://portal.lelware.com";
 
         [SerializeField]
-        [Tooltip("Public project id = the route segment, e.g. a GUID or the literal \"Clearwater\".")]
+        [Tooltip("Public project id = the route segment, e.g. a GUID or a fixed human-readable id.")]
         private string projectId = string.Empty;
 
         [SerializeField]

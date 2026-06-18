@@ -195,7 +195,7 @@ namespace Lelware.Sdk
         // A SECOND namespace, {projectId}/shared/..., that is GLOBAL to the project rather than
         // isolated per player (the methods above are per-player). It's for assets that are
         // identical for every viewer — a server-prefetched / derived cache. Clients may only
-        // READ it: writes happen server-side (e.g. the portal's pixiv super-like cache job), so
+        // READ it: writes happen server-side (e.g. a server-side prefetch/cache job), so
         // there are deliberately no shared Upload/Delete helpers here.
 
         /// <summary>True when an object exists under <paramref name="name" /> in the project's shared storage.</summary>

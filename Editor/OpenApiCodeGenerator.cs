@@ -14,7 +14,7 @@ namespace Lelware.Sdk.Editor
     ///
     ///     Deliberately a SMALL, targeted OpenAPI reader (not a general-purpose one), but general
     ///     enough for every path this portal emits: any number of path parameters anywhere in the
-    ///     route (e.g. Clearwater's <c>/api/clearwater/tiles/{x}/{y}/{z}.vector</c>), query
+    ///     route (e.g. <c>/api/maps/tiles/{x}/{y}/{z}.vector</c>), query
     ///     parameters, a JSON request body, and a JSON / binary / empty response. Anything it can't
     ///     classify degrades to <c>object</c> rather than failing.
     ///
@@ -336,8 +336,8 @@ namespace Lelware.Sdk.Editor
         }
 
         // Derive a method name from the route's literal text (params stripped). PascalCasing
-        // happens in SanitizeType, so e.g. "/api/clearwater/tiles/{x}/{y}/{z}.vector" yields
-        // "ClearwaterTilesVector", and "/api/{projectId}/GetSettings/{dataKey}" -> "GetSettings".
+        // happens in SanitizeType, so e.g. "/api/maps/tiles/{x}/{y}/{z}.vector" yields
+        // "MapsTilesVector", and "/api/{projectId}/GetSettings/{dataKey}" -> "GetSettings".
         private static string DeriveName(string[] segments)
         {
             var sb = new StringBuilder();

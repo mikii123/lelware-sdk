@@ -322,7 +322,7 @@ namespace Lelware.Sdk
         }
 
         /// <summary>
-        ///     Typed call to an ABSOLUTE API path (e.g. <c>/api/clearwater/tiles/1/2/3.vector</c>),
+        ///     Typed call to an ABSOLUTE API path (e.g. <c>/api/maps/tiles/1/2/3.vector</c>),
         ///     with all route/query substitution already baked into <paramref name="relativePath" />.
         ///     This is what the OpenAPI-generated methods target: it doesn't assume the
         ///     <c>/api/{ProjectId}/{action}</c> shape, so it handles endpoints with many path params
@@ -343,7 +343,7 @@ namespace Lelware.Sdk
 
         /// <summary>
         ///     Binary absolute-path call — for endpoints that return raw bytes rather than JSON
-        ///     (e.g. Clearwater vector tiles, <c>application/x-protobuf</c>). The bytes land in
+        ///     (e.g. vector map tiles, <c>application/x-protobuf</c>). The bytes land in
         ///     <see cref="LelwareResult{T}.Data" />; a 2xx with no body (e.g. a 201) yields null
         ///     data with <c>Error == false</c>. Never throws.
         /// </summary>
@@ -543,7 +543,7 @@ namespace Lelware.Sdk
 
         /// <summary>
         ///     Binary counterpart of <see cref="SendRawAsync" /> for endpoints that return raw bytes
-        ///     (e.g. Clearwater vector tiles, <c>application/x-protobuf</c>). Same header /
+        ///     (e.g. vector map tiles, <c>application/x-protobuf</c>). Same header /
         ///     cancellation / error contract; the payload comes back in <see cref="LelwareResult{T}.Data" />,
         ///     and a 2xx with no body yields null data with <c>Error == false</c>. On a non-2xx the
         ///     (usually plain-text) error body is surfaced via <see cref="LelwareResult.RawBody" />.

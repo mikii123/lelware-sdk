@@ -23,7 +23,7 @@ using Lelware.Sdk;
 
 var config = new LelwareClientConfig(
     baseUrl:   "https://portal.lelware.com",
-    projectId: "Clearwater",          // project ID = route segment (GUID or literal)
+    projectId: "my-project",          // project ID = route segment (GUID or fixed id)
     deviceId:  SystemInfo.deviceUniqueIdentifier); // optional, stable per device
 
 var client = new LelwareClient(config);
@@ -132,10 +132,10 @@ Notes:
   project (a route that a given project doesn't have returns 404 at runtime).
 - **All** endpoints under `/api/...` are generated except `Authentication` (hand-written login)
   and `Storage` (hand-written multipart). This includes endpoints outside the
-  `api/{projectId}/...` schema — e.g. Clearwater's `api/clearwater/tiles/{x}/{y}/{z}.vector`.
+  `api/{projectId}/...` schema — e.g. `api/maps/tiles/{x}/{y}/{z}.vector`.
   The remaining path params (here `x/y/z`) become method arguments; `projectId`/`pid` always
   come from the client.
-- Endpoints returning bytes (e.g. Clearwater tiles, `application/x-protobuf`) are generated
+- Endpoints returning bytes (e.g. vector map tiles, `application/x-protobuf`) are generated
   as `LelwareResult<byte[]>` (data in `.Data`); JSON → `LelwareResult<T>`; empty 2xx →
   `LelwareResult`. For binary content to appear in OpenAPI, the action must declare it
   (`[Produces(...)]` + `[ProducesResponseType(typeof(byte[]), 200)]`).
@@ -292,7 +292,7 @@ if (list.Ok) foreach (var o in list.Data.Objects) Debug.Log($"{o.Name} ({o.Size}
 ```
 
 There are deliberately no shared `Upload`/`Delete` helpers — the shared namespace is written
-only by server-side jobs (e.g. the portal's pixiv super-like cache). Requires `Storage:*` on the
+only by server-side jobs (e.g. a server-side prefetch/cache job). Requires `Storage:*` on the
 portal side; the caller must be a player of the project.
 
 ## Notes
