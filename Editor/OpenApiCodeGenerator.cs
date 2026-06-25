@@ -185,7 +185,7 @@ namespace Lelware.Sdk.Editor
             var baseName = op["operationId"]?.ToString();
             if (string.IsNullOrEmpty(baseName))
             {
-                baseName = DeriveName(segments);
+                baseName = DeriveName(segments, verb);
             }
 
             var methodName = Unique(used, SanitizeType(baseName)) + "Async";
@@ -336,14 +336,33 @@ namespace Lelware.Sdk.Editor
         }
 
         // Derive a method name from the route's literal text (params stripped). PascalCasing
-        // happens in SanitizeType, so e.g. "/api/maps/tiles/{x}/{y}/{z}.vector" yields
-        // "MapsTilesVector", and "/api/{projectId}/GetSettings/{dataKey}" -> "GetSettings".
-        private static string DeriveName(string[] segments)
+        // happens in SanitizeType, so e.g. "/api/{projectId}/GetSettings/{dataKey}" -> "GetSettings".
+        //
+        // For a project-DEDICATED endpoint (its first segment after "api" is a literal — a module's
+        // own project id — rather than the generic {projectId}/{pid} token) the HTTP verb is
+        // inserted right after that project segment, BEFORE the rest of the path. This disambiguates
+        // PUT/POST/DELETE on the same resource — which strip to the same literal name and would
+        // otherwise get ugly numeric suffixes (Superlikes2/3) — into readable distinct names, e.g.
+        // DELETE /api/pixivfe/v2/library/superlikes/{id} -> "PixivfeDeleteV2LibrarySuperlikes".
+        //
+        // The generic, {projectId}-templated core endpoints are left as-is (verb NOT inserted):
+        // their action names already read with the verb baked in (GetSettings, SetPlayerData), so a
+        // prefix would just double it up (GetGetSettings).
+        private static string DeriveName(string[] segments, string verb)
         {
+            // "Dedicated" = first post-"api" segment is a literal, not the project-id token.
+            var dedicated = segments.Length >= 2 && !IsProjectIdParam(segments[1].Trim('{', '}'));
+
             var sb = new StringBuilder();
             for (var s = 1; s < segments.Length; s++) // skip "api"
             {
                 sb.Append('/').Append(StripTokens(segments[s]));
+
+                // Slot the verb in immediately after the project segment.
+                if (dedicated && s == 1)
+                {
+                    sb.Append('/').Append(verb);
+                }
             }
 
             return sb.ToString();

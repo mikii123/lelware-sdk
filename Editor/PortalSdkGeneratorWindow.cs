@@ -22,12 +22,14 @@ namespace Lelware.Sdk.Editor
     {
         private const string KeyBaseUrl = "lelware.sdk.baseUrl";
         private const string KeySecret = "lelware.sdk.secret";
+        private const string KeyProjectId = "lelware.sdk.projectId";
         private const string KeyOutput = "lelware.sdk.outputPath";
 
         private const string DefaultOutput = "Assets/Lelware/Generated/LelwarePortalApi.Generated.cs";
 
         private string _baseUrl;
         private string _secret;
+        private string _projectId;
         private string _output;
         private string _status;
         private bool _busy;
@@ -43,6 +45,7 @@ namespace Lelware.Sdk.Editor
         {
             _baseUrl = EditorPrefs.GetString(KeyBaseUrl, "https://portal.lelware.com");
             _secret = EditorPrefs.GetString(KeySecret, "");
+            _projectId = EditorPrefs.GetString(KeyProjectId, "");
             _output = EditorPrefs.GetString(KeyOutput, DefaultOutput);
         }
 
@@ -51,6 +54,7 @@ namespace Lelware.Sdk.Editor
             EditorGUILayout.LabelField("Portal", EditorStyles.boldLabel);
             _baseUrl = EditorGUILayout.TextField("Base URL", _baseUrl);
             _secret = EditorGUILayout.PasswordField("Explorer secret", _secret);
+            _projectId = EditorGUILayout.TextField("Project ID", _projectId);
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Output", EditorStyles.boldLabel);
@@ -77,6 +81,7 @@ namespace Lelware.Sdk.Editor
         {
             EditorPrefs.SetString(KeyBaseUrl, _baseUrl?.Trim() ?? "");
             EditorPrefs.SetString(KeySecret, _secret ?? "");
+            EditorPrefs.SetString(KeyProjectId, _projectId?.Trim() ?? "");
             EditorPrefs.SetString(KeyOutput, _output?.Trim() ?? DefaultOutput);
         }
 
@@ -88,7 +93,15 @@ namespace Lelware.Sdk.Editor
 
             try
             {
+                // Scope the schema to one project: the portal folds in THIS project's own
+                // additional endpoints (custom scripts + any module-dedicated routes). Without a
+                // projectId the portal returns only the project-agnostic surface.
                 var url = $"{(_baseUrl ?? "").TrimEnd('/')}/api/sdk/OpenApi";
+                if (!string.IsNullOrEmpty(_projectId))
+                {
+                    url += "?projectId=" + Uri.EscapeDataString(_projectId);
+                }
+
                 var json = FetchSchema(url, _secret);
 
                 var source = OpenApiCodeGenerator.Generate(json);
