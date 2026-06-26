@@ -164,6 +164,16 @@ namespace Lelware.Sdk
             get { lock (_gate) { return _connectionId != null; } }
         }
 
+        /// <summary>
+        ///     The current connection id (from the latest <c>welcome</c> frame), or null when not
+        ///     connected. Needed by endpoints that bind a server-side action to THIS socket — e.g.
+        ///     matchmaking register passes it so the <c>match_found</c> push reaches this client.
+        /// </summary>
+        public string ConnectionId
+        {
+            get { lock (_gate) { return _connectionId; } }
+        }
+
         // --- lifecycle ---------------------------------------------------------
 
         /// <summary>
