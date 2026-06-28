@@ -80,9 +80,10 @@ namespace Lelware.Sdk
         // --- wire DTOs ---------------------------------------------------------
 
         /// <summary>
-        ///     Payload of a <c>match_found</c> frame. <see cref="MatchId"/> is currently a server-
-        ///     minted id; a future "game session" feature will make it a real session id (the shape
-        ///     stays the same, so code against it now).
+        ///     Payload of a <c>match_found</c> frame. <see cref="MatchId"/> is the created game
+        ///     session's id when the queue's game title has an enabled session definition (pass it to
+        ///     <see cref="GameSessionEndpoints.JoinSession"/>); otherwise it's a server-minted id with
+        ///     no session behind it. The shape is the same either way.
         /// </summary>
         [Serializable]
         public sealed class MatchFound
