@@ -1,9 +1,11 @@
 # Lelware SDK (Unity)
 
-Client SDK for the LelwarePortal API. It logs in with a bearer token, caches it,
-and attaches it to every request, always sends the `Is-Client: api-client` header,
-and lets you generate typed request/response classes from a schema manifest
-(build-time) — with a generic escape hatch for any custom schema of your own.
+Client SDK for the LelwarePortal client API. It logs in with a bearer token, caches it
+and attaches it to every request, and always sends the `Is-Client: api-client` header.
+Most of the client surface is **generated from the portal's OpenAPI document** at build
+time; a small set of endpoints whose shape doesn't fit a generated JSON call —
+authentication, object storage, realtime, matchmaking and game sessions — are hand-written.
+For custom scripts there's a generic escape hatch (bring your own request/response types).
 
 ## Installation (UPM)
 
@@ -71,11 +73,16 @@ client.PersistToken();
 var settings = await client.GetSettingsAsync();
 if (settings.Ok) foreach (var s in settings.Data) { /* ... */ }
 
-await client.SetPlayerDataAsync("level", 7);
+await client.SetPlayerDataAsync("level", 7, secret: false);  // 3rd arg maps to the ?secret flag
 
 var lvl = await client.GetPlayerDataAsync("level");          // LelwareResult<PlayerDataEntryDto>
 if (lvl.Error && lvl.Code == 404) { /* key does not exist */ }
-else if (lvl.Ok) { int level = lvl.Data.value.As<int>(); }   // .As<T>() from Lelware.Sdk
+else if (lvl.Ok)
+{
+    // .value is the RAW stored string (the raw JSON text for a value stored as JSON) —
+    // deserialize it yourself:
+    int level = JsonConvert.DeserializeObject<int>(lvl.Data.value);
+}
 
 var all = await client.GetAllPlayerDataAsync();
 await client.DeletePlayerDataAsync("level");
@@ -107,16 +114,22 @@ parsed (`Code` = a 2xx status, but `Error == true`, with the reason in `Message`
 
 ## Generating from the portal (OpenAPI) — the main mode
 
-The portal exposes **one global OpenAPI 3 document** for the entire client API
-(`GET /api/sdk/OpenApi`), from which the SDK generates all calls. **The only permanent
-hand-written part is `Authentication`** (login + token); additionally `Storage` (multipart
-presigned) has its own hand-written module. Everything else — static endpoints
-(`GetSettings`, player-data CRUD) and **the routes of all scripts across all projects**
-(a distinct union) — is generated dynamically.
+The portal exposes an OpenAPI 3 document for the client API (`GET /api/sdk/OpenApi`),
+**scoped to the project id you pass** — it folds in that project's own custom-script routes
+(and any module-dedicated routes) on top of the shared surface. The SDK generates a typed call
+for (almost) every operation in it. A handful of endpoints are **hand-written** instead,
+because their shape doesn't fit a generated JSON round-trip: `Authentication`
+(login/register), `Storage` + `SharedStorage` (presigned multipart), `Realtime`,
+`Matchmaking` and `GameSession` — the portal keeps these out of the generated document.
+Everything else — the static endpoints (`GetSettings`, player-data CRUD) and the project's
+custom-script routes — is generated.
 
 1. In the portal, set the API key in `appsettings` (`Api:Key`).
-2. In Unity: `Tools > Lelware > Generate SDK from Portal` → provide the Base URL + secret →
-   *Fetch schema & generate*. It writes `Assets/Lelware/Generated/LelwarePortalApi.Generated.cs`.
+2. In Unity: `Tools > Lelware > Generate SDK from Portal` → fill in the **Base URL**, the
+   **Explorer secret** (the portal's `Api:Key`) and the **Project ID** (so the schema includes
+   that project's script routes) → *Fetch schema & generate*. It writes
+   `Assets/Lelware/Generated/LelwarePortalApi.Generated.cs` (namespace `Lelware.Sdk.Generated`,
+   calls as extension methods on the static `GeneratedApi` class).
 
 ```csharp
 using Lelware.Sdk.Generated;
@@ -130,31 +143,53 @@ Notes:
 - `projectId` is **not** a method argument — it comes from `LelwareClient.ProjectId`
   (seeded from the config, changeable at runtime), so one generated SDK serves every
   project (a route that a given project doesn't have returns 404 at runtime).
-- **All** endpoints under `/api/...` are generated except `Authentication` (hand-written login)
-  and `Storage` (hand-written multipart). This includes endpoints outside the
-  `api/{projectId}/...` schema — e.g. `api/maps/tiles/{x}/{y}/{z}.vector`.
-  The remaining path params (here `x/y/z`) become method arguments; `projectId`/`pid` always
-  come from the client.
+- Every `/api/...` operation in the document is generated except the hand-written ones above
+  (`Authentication`, `Storage`/`SharedStorage`, `Realtime`, `Matchmaking`, `GameSession`) and
+  the surface the portal deliberately excludes (the custom-page endpoints, and the generic
+  `RunScript` template — replaced by one concrete method per script route). This includes
+  endpoints outside the `api/{projectId}/...` shape — e.g. `api/maps/tiles/{x}/{y}/{z}.vector`.
+  Path params (here `x/y/z`) and query-string params become method arguments, and a JSON
+  request body becomes a `body` argument; only `projectId`/`pid` always come from the client.
 - Endpoints returning bytes (e.g. vector map tiles, `application/x-protobuf`) are generated
   as `LelwareResult<byte[]>` (data in `.Data`); JSON → `LelwareResult<T>`; empty 2xx →
   `LelwareResult`. For binary content to appear in OpenAPI, the action must declare it
   (`[Produces(...)]` + `[ProducesResponseType(typeof(byte[]), 200)]`).
 - Scripts have no parameter schema on the server side, so their request/response are
-  **loosely typed** (`object`). To type them — see the manifest below.
+  **loosely typed** (`object`). To type them — see *Typing custom scripts* below.
 - The schema endpoint is protected by an API key (`X-Api-Key`), compared in constant time
   against `Api:Key`. Without a configured key the endpoint is closed (fail-safe).
 
-## Typing scripts with a manifest (optional)
+## Typing custom scripts
 
-Custom scripts (`api/{pid}/RunScript/{route}`) have no static schema on the server side —
-the script reads raw JSON. So for **selected** scripts that you want to give strong
-request/response types, you **describe the shape in a JSON manifest**, and the generator
-emits typed classes and call methods from it. (Method names differ from the portal mode —
-there it's `Script{Route}Async`, here it's `{Name}Async` — so they don't collide unless you
-give one the same name yourself.)
+Custom scripts (`api/{pid}/RunScript/{route}`) have **no static schema** on the server — a
+script just reads raw JSON — so the OpenAPI generator emits them **loosely typed** (`object`
+in and out). Two ways to give a script strong types:
 
-1. `Tools > Lelware > Create Sample Schema` — creates `Assets/Lelware/lelware-sdk.json`.
-2. Edit the manifest (example):
+### Escape hatch (recommended)
+
+Bring your own request/response classes and use the generic call surface directly — no code
+generation needed:
+
+```csharp
+class MyReq  { public int a; public string b; }
+class MyResp { public bool ok; public string msg; }
+
+var r = await client.CallScriptAsync<MyReq, MyResp>("myRoute", new MyReq { a = 1, b = "x" });
+if (r.Ok) Debug.Log(r.Data.msg);
+// GET variant (params go on the query string):
+var r2 = await client.GetScriptAsync<MyResp>("myRoute",
+    new Dictionary<string,string> { ["x"] = "1" });
+```
+
+### Manifest generator (advanced — no bundled menu command)
+
+The Editor assembly also ships a manifest-driven generator — `SdkCodeGenerator.Generate` plus
+the `SdkSchema` model (namespace `Lelware.Sdk.Editor`) — that turns a JSON description of
+selected scripts into typed `{Name}Async` calls (extension methods on a `GeneratedEndpoints`
+class, namespace `Lelware.Sdk.Generated`). **There is no menu item for it**: drive it from your
+own editor script — deserialize your manifest JSON into `SdkSchema`, call
+`SdkCodeGenerator.Generate(schema)`, and write the returned source under `Assets/`. The manifest
+shape:
 
 ```json
 {
@@ -175,10 +210,7 @@ give one the same name yourself.)
 }
 ```
 
-3. `Tools > Lelware > Generate SDK` — writes
-   `Assets/Lelware/Generated/LelwareSdk.Generated.cs`.
-
-Generated calls (extension methods on `LelwareClient`):
+It emits, for the example above:
 
 ```csharp
 using Lelware.Sdk.Generated;
@@ -188,13 +220,13 @@ if (res.Ok) Debug.Log($"ok: {res.Data.ok}");
 var items = await client.ListItemsAsync(new ListItemsRequest { page = 0 });
 ```
 
-### Manifest fields
+Manifest fields:
 
 - `types[]` — reusable DTOs (`name`, `fields`).
 - `endpoints[]`:
   - `name` — the `{Name}Async` method, the `{Name}Request` / `{Name}Response` classes.
   - `route` — the `RunScript/{route}` segment.
-  - `method` — `POST` (JSON body) or `GET` (query string).
+  - `method` — `POST` (JSON body) or `GET` (query string). Defaults to `POST`.
   - `request` / `response` — either `{ "type": "..." }` (use an existing type), or
     `{ "fields": [...] }` (generate a class). An omitted `request` = a parameterless method.
 - `fields[]` — `name` (the C# and JSON field name), `type` (any C# type, e.g. `int`,
@@ -202,21 +234,6 @@ var items = await client.ListItemsAsync(new ListItemsRequest { page = 0 });
 
 Generated classes are `partial` — you can extend them in a separate file without losing
 changes on regeneration.
-
-## Custom schema without the generator (escape hatch)
-
-For anything not in the manifest — your own classes + a generic call:
-
-```csharp
-class MyReq  { public int a; public string b; }
-class MyResp { public bool ok; public string msg; }
-
-var r = await client.CallScriptAsync<MyReq, MyResp>("myRoute", new MyReq { a = 1, b = "x" });
-if (r.Ok) Debug.Log(r.Data.msg);
-// GET variant:
-var r2 = await client.GetScriptAsync<MyResp>("myRoute",
-    new Dictionary<string,string> { ["x"] = "1" });
-```
 
 ## Storage (per-player assets, multipart)
 
@@ -295,6 +312,99 @@ There are deliberately no shared `Upload`/`Delete` helpers — the shared namesp
 only by server-side jobs (e.g. a server-side prefetch/cache job). Requires `Storage:*` on the
 portal side; the caller must be a player of the project.
 
+## Realtime (WebSocket channels)
+
+`LelwareRealtime` is a companion to `LelwareClient` — **share one logged-in client** between
+them. It connects to `/api/{pid}/Realtime/Connect` reusing the SAME auth as the rest of the
+SDK (the `Is-Client` header + cached bearer token ride on the upgrade request), so realtime
+needs no cookie: log in first, then `Start()`.
+
+```csharp
+var realtime = new LelwareRealtime(client);
+realtime.Start();                              // capture the calling (main) thread for handlers
+
+// raw JSON payload:
+realtime.Subscribe("news", json => Debug.Log("news: " + json));
+// or typed (deserialized with Newtonsoft):
+realtime.Subscribe<MyDto>("news", dto => Debug.Log(dto.title));
+
+realtime.Unsubscribe("news");
+// ...on teardown:
+realtime.Stop();   // (or Dispose()) — no reconnect after this
+```
+
+- **Threading:** the socket runs on a background task, but your handlers are marshalled back
+  onto the thread that called `Start()` (call it from the Unity main thread), so you can touch
+  Unity APIs inside them.
+- **Reconnect is automatic** with capped backoff; every subscription is re-applied on each
+  reconnect (safe to subscribe before the socket is connected).
+- **Never throws** — failures surface via `LelwareClient.Logger` when logging is enabled.
+- `IsConnected` / `ConnectionId` expose the socket state; `ConnectionId` is needed by endpoints
+  that bind a server-side push to this socket (e.g. matchmaking register).
+- **Transport:** defaults to `ClientWebSocketTransport` (works on standalone / mobile /
+  dedicated-server, built on `System.Net.WebSockets.ClientWebSocket`). **WebGL is NOT
+  supported** by the default transport (no sockets in the browser sandbox, and a browser socket
+  can't set custom auth headers). For WebGL or a custom stack, implement `ILelwareRealtimeSocket`
+  and pass a factory to the `LelwareRealtime` constructor — the rest (reconnect, subscriptions,
+  main-thread marshalling) is transport-agnostic.
+
+## Matchmaking
+
+A player joins a queue and waits to be matched; the match arrives **out-of-band** as a
+`match_found` frame on the realtime `matchmaking` channel — so matchmaking pairs with
+`LelwareRealtime` (hand-written, not generated). All calls are exception-free (`LelwareResult`).
+
+```csharp
+var realtime = new LelwareRealtime(client);
+realtime.Start();
+realtime.OnMatchFound(m =>
+    Debug.Log($"Matched {string.Join(",", m.Players)} (match {m.MatchId})"));
+
+// register once the socket is connected (its ConnectionId is sent so the push reaches THIS socket):
+var reg = await client.RegisterMatchmakingAsync(realtime, "ranked-1v1");
+if (reg.Error) Debug.LogError($"register ({reg.Code}): {reg.Message}");
+
+// ...later:
+await client.LeaveMatchmakingAsync("ranked-1v1");   // idempotent
+```
+
+- `RegisterMatchmakingAsync` returns an error result (without hitting the network) if the
+  realtime client isn't connected yet — `Start()` and wait for `IsConnected` first.
+- `MatchFound.MatchId` **is the created game session's id** when the queue is linked to an
+  enabled session definition (pass it to `JoinSession` below); otherwise it's a server-minted id
+  with no session behind it. The wire shape is identical either way.
+
+## Game sessions
+
+A session is created server-side when a match forms; its id is the `MatchId` of the
+`match_found` frame, and it gets its own **per-session realtime channel**. The player "joins"
+by subscribing to that channel, then reads/writes session state through this API (hand-written).
+The caller must be logged in and a roster member of the session.
+
+```csharp
+realtime.OnMatchFound(m =>
+{
+    realtime.JoinSession(m.MatchId, json => Debug.Log("session msg: " + json));
+    // typed overload also available: realtime.JoinSession<MyMsg>(m.MatchId, msg => ...)
+});
+
+// during play (subject to the session definition's flags — a 403 result if players aren't allowed):
+await client.SetSessionDataAsync(sessionId, "score", "10");
+await client.BroadcastSessionAsync(sessionId, "moved", new { x = 1, y = 2 });
+
+// reads — any roster member:
+var data    = await client.GetSessionDataAsync(sessionId);          // all entries (SessionDataEntry[])
+var one      = await client.GetSessionDataAsync(sessionId, "score"); // just one key
+var players = await client.GetSessionPlayersAsync(sessionId);       // roster (string[])
+
+realtime.LeaveSession(sessionId);   // stop receiving its broadcasts
+```
+
+- `BroadcastSessionAsync` / `SetSessionDataAsync` are gated server-side by the session
+  definition's player-broadcast / player-set-data flags (a `403` result when players aren't
+  allowed — a server-side caller uses the flags differently).
+- The join subscription is reconnect-safe (re-applied automatically by the realtime client).
+
 ## Notes
 
 - The network layer is `UnityWebRequest` wrapped in an awaiter (`async/await`, works on
@@ -303,6 +413,6 @@ portal side; the caller must be a player of the project.
   which isn't valid JSON on its own; the SDK splits it on the `||Response:` marker for you
   (`LoginResult.Token` / `LoginResult.Payload`, the OnLogin/OnRegister output in
   `Payload.CustomData`). Register tolerates a missing token half (it need not auto-login).
-- `GetSettings` on the portal side requires a route segment, even though it ignores it — the
-  SDK sends a placeholder, so you don't have to do anything.
+- Token persistence uses `PlayerPrefs` (plain-text) — `PersistToken` / `TryRestoreToken`
+  store the token plus its expiry, and a restore refuses an already-expired token.
 ```
