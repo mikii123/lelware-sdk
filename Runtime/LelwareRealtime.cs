@@ -400,7 +400,7 @@ namespace Lelware.Sdk
         private string BuildWsUrl()
         {
             // BaseUrl is http(s); the WebSocket scheme is ws(s).
-            var baseUrl = (_client.Config.BaseUrl ?? "").Replace("https://", "wss://").Replace("http://", "ws://");
+            var baseUrl = (_client.BaseUrl ?? "").Replace("https://", "wss://").Replace("http://", "ws://");
             return baseUrl + "/api/" + Uri.EscapeDataString(_client.ProjectId ?? "") + "/Realtime/Connect";
         }
 

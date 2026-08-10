@@ -35,6 +35,9 @@ namespace Lelware.Sdk
 
         private readonly LelwareClientConfig _config;
 
+        // Live base URL backing field (seeded from config, re-pointable at runtime — see BaseUrl).
+        private string _baseUrl;
+
         // Cached after a successful login. In memory only by default — call
         // PersistToken/TryRestoreToken if you want it to survive an app restart.
         private string _accessToken;
@@ -44,6 +47,7 @@ namespace Lelware.Sdk
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             ProjectId = config.ProjectId; // seed the live project id from config.
+            BaseUrl = config.BaseUrl;     // seed the live base URL from config.
         }
 
         public LelwareClientConfig Config => _config;
@@ -68,6 +72,21 @@ namespace Lelware.Sdk
         /// </summary>
         public string ProjectId { get; set; }
 
+        /// <summary>
+        ///     Portal base URL used to build EVERY request (<c>{BaseUrl}/api/{ProjectId}/...</c>).
+        ///     Seeded from <see cref="LelwareClientConfig.BaseUrl" /> but mutable — exactly like
+        ///     <see cref="ProjectId" /> — so one client can be re-pointed at another portal at runtime
+        ///     (e.g. after picking one via <see cref="LelwareDiscovery" />): set it, then call
+        ///     <see cref="LoginAsync" /> again against the new host. The trailing slash is trimmed on
+        ///     read so URL composition can always assume there isn't one. A null/blank value is
+        ///     tolerated (calls just resolve against an empty root) to keep the API exception-free.
+        /// </summary>
+        public string BaseUrl
+        {
+            get => _baseUrl?.TrimEnd('/');
+            set => _baseUrl = value;
+        }
+
         /// <summary>True once a token is cached and not yet past its known expiry.</summary>
         public bool IsAuthenticated =>
             !string.IsNullOrEmpty(_accessToken) && DateTime.UtcNow < _expiresAtUtc;
@@ -89,7 +108,7 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<LoginResult>> LoginAsync(string email, string password, CancellationToken ct = default)
         {
-            var url = $"{_config.BaseUrl}/api/{Uri.EscapeDataString(ProjectId ?? string.Empty)}/Authentication/Login";
+            var url = $"{BaseUrl}/api/{Uri.EscapeDataString(ProjectId ?? string.Empty)}/Authentication/Login";
             var bodyJson = JsonConvert.SerializeObject(new { Email = email, Password = password });
 
             // Login is the one call made WITHOUT a bearer token (we don't have one yet),
@@ -151,7 +170,7 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<LoginResult>> RegisterAsync(string email, string password, CancellationToken ct = default)
         {
-            var url = $"{_config.BaseUrl}/api/{Uri.EscapeDataString(ProjectId ?? string.Empty)}/Authentication/Register";
+            var url = $"{BaseUrl}/api/{Uri.EscapeDataString(ProjectId ?? string.Empty)}/Authentication/Register";
             var bodyJson = JsonConvert.SerializeObject(new { Email = email, Password = password });
 
             // Like login, register runs WITHOUT a bearer token (we don't have one yet) but still
@@ -331,14 +350,14 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<TResponse>> SendPathAsync<TResponse>(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            var raw = await SendRawAsync(verb, _config.BaseUrl + relativePath, body, includeAuth: true, ct);
+            var raw = await SendRawAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
             return Deserialize<TResponse>(raw);
         }
 
         /// <summary>Bodyless absolute-path variant — for endpoints whose 2xx body is empty.</summary>
         public async Task<LelwareResult> SendPathAsync(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            return await SendRawAsync(verb, _config.BaseUrl + relativePath, body, includeAuth: true, ct);
+            return await SendRawAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
         }
 
         /// <summary>
@@ -349,7 +368,7 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<byte[]>> SendBytesAsync(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            return await SendRawBytesAsync(verb, _config.BaseUrl + relativePath, body, includeAuth: true, ct);
+            return await SendRawBytesAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
         }
 
         /// <summary>
@@ -445,7 +464,7 @@ namespace Lelware.Sdk
 
         private string BuildUrl(string action, string dataKey)
         {
-            var sb = new StringBuilder(_config.BaseUrl);
+            var sb = new StringBuilder(BaseUrl);
             sb.Append("/api/").Append(Uri.EscapeDataString(ProjectId ?? string.Empty)).Append('/').Append(action);
             if (!string.IsNullOrEmpty(dataKey))
             {
