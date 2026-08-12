@@ -35,6 +35,14 @@ namespace Lelware.Sdk
         /// <summary>Portal base URL reachable on the LAN, e.g. <c>http://192.168.1.50:8080</c>.</summary>
         public string BaseUrl;
 
+        /// <summary>
+        ///     Portal gRPC ingress reachable on the LAN (the Triton passthrough), e.g.
+        ///     <c>http://192.168.1.50:8081</c> — a SEPARATE port from <see cref="BaseUrl" /> (cleartext
+        ///     gRPC needs its own HTTP/2-only endpoint). Null when the portal advertises no gRPC endpoint;
+        ///     use it to dial portal-proxied Triton without a hard-coded URL.
+        /// </summary>
+        public string GrpcBaseUrl;
+
         /// <summary>UTC time this project was last heard in a beacon (for staleness / "still alive" UI).</summary>
         public DateTime LastSeenUtc;
 
@@ -337,6 +345,7 @@ namespace Lelware.Sdk
                     Name = p.Name,
                     TemplateId = p.TemplateId,
                     BaseUrl = p.BaseUrl,
+                    GrpcBaseUrl = p.GrpcBaseUrl,
                     LastSeenUtc = now
                 });
             }
@@ -344,7 +353,8 @@ namespace Lelware.Sdk
             return list;
         }
 
-        // Wire shape of the portal's beacon: { "portal": "...", "projects": [ { pid, name, baseUrl } ] }.
+        // Wire shape of the portal's beacon:
+        // { "portal": "...", "projects": [ { pid, name, templateId, baseUrl, grpcBaseUrl } ] }.
         [Serializable]
         private sealed class BeaconFrame
         {
@@ -359,6 +369,7 @@ namespace Lelware.Sdk
             [JsonProperty("name")] public string Name;
             [JsonProperty("templateId")] public string TemplateId;
             [JsonProperty("baseUrl")] public string BaseUrl;
+            [JsonProperty("grpcBaseUrl")] public string GrpcBaseUrl;
         }
     }
 }
