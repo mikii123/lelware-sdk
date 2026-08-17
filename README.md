@@ -86,7 +86,22 @@ else if (lvl.Ok)
 
 var all = await client.GetAllPlayerDataAsync();
 await client.DeletePlayerDataAsync("level");
+
+// Project-scoped data — the same KV shape, but SHARED across the whole project (every player
+// reads/writes the same keys). Client-editable: any player of the project can Set/Delete a key.
+await client.SetProjectDataAsync("mapSeed", 12345);          // value stored verbatim
+var seed = await client.GetProjectDataAsync("mapSeed");      // LelwareResult<ProjectDataEntryDto>
+if (seed.Ok) { int s = JsonConvert.DeserializeObject<int>(seed.Data.value); }
+var allProj = await client.GetAllProjectDataAsync();          // List<ProjectDataEntryDto>
+await client.DeleteProjectDataAsync("mapSeed");
 ```
+
+> **Player-data vs project-data.** Player-data is per-player (isolated to the caller — use it for a
+> player's own state/secrets). Project-data is **one namespace for the whole project** — every
+> member sees and can overwrite the same keys, so it's for *shared* state (a collaborative counter,
+> a shared config), not per-player secrets. Both are now client-editable; a caller must be a player
+> of the project. `ProjectDataEntryDto` carries `{ key, value }` (`value` is the raw stored string —
+> the raw JSON text for a JSON value — deserialize it yourself, exactly like player-data).
 
 Every call automatically:
 - sets `Is-Client: api-client`,
@@ -121,8 +136,8 @@ for (almost) every operation in it. A handful of endpoints are **hand-written** 
 because their shape doesn't fit a generated JSON round-trip: `Authentication`
 (login/register), `Storage` + `SharedStorage` (presigned multipart), `Realtime`,
 `Matchmaking` and `GameSession` — the portal keeps these out of the generated document.
-Everything else — the static endpoints (`GetSettings`, player-data CRUD) and the project's
-custom-script routes — is generated.
+Everything else — the static endpoints (`GetSettings`, player-data CRUD, project-data CRUD)
+and the project's custom-script routes — is generated.
 
 1. In the portal, set the API key in `appsettings` (`Api:Key`).
 2. In Unity: `Tools > Lelware > Generate SDK from Portal` → fill in the **Base URL**, the
