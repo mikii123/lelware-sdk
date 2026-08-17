@@ -3,9 +3,10 @@
 Client SDK for the LelwarePortal client API. It logs in with a bearer token, caches it
 and attaches it to every request, and always sends the `Is-Client: api-client` header.
 Most of the client surface is **generated from the portal's OpenAPI document** at build
-time; a small set of endpoints whose shape doesn't fit a generated JSON call —
-authentication, object storage, realtime, matchmaking and game sessions — are hand-written.
-For custom scripts there's a generic escape hatch (bring your own request/response types).
+time; a set of features whose shape doesn't fit a generated JSON call — authentication,
+object storage, realtime, matchmaking, game sessions, the reverse proxy, Triton endpoint
+resolution and sidecar workers — are **dedicated hand-written methods**. For custom scripts
+there's a generic escape hatch (bring your own request/response types).
 
 ## Installation (UPM)
 
@@ -132,12 +133,13 @@ parsed (`Code` = a 2xx status, but `Error == true`, with the reason in `Message`
 The portal exposes an OpenAPI 3 document for the client API (`GET /api/sdk/OpenApi`),
 **scoped to the project id you pass** — it folds in that project's own custom-script routes
 (and any module-dedicated routes) on top of the shared surface. The SDK generates a typed call
-for (almost) every operation in it. A handful of endpoints are **hand-written** instead,
+for (almost) every operation in it. A handful of features are **hand-written** instead,
 because their shape doesn't fit a generated JSON round-trip: `Authentication`
 (login/register), `Storage` + `SharedStorage` (presigned multipart), `Realtime`,
-`Matchmaking` and `GameSession` — the portal keeps these out of the generated document.
-Everything else — the static endpoints (`GetSettings`, player-data CRUD, project-data CRUD)
-and the project's custom-script routes — is generated.
+`Matchmaking`, `GameSession`, `Proxy` (transparent pass-through), `Triton` (endpoint
+resolution) and `Sidecar` (a WebSocket worker) — the portal keeps these out of the generated
+document. Everything else — the static endpoints (`GetSettings`, player-data CRUD,
+project-data CRUD) and the project's custom-script routes — is generated.
 
 1. In the portal, set the API key in `appsettings` (`Api:Key`).
 2. In Unity: `Tools > Lelware > Generate SDK from Portal` → fill in the **Base URL**, the
@@ -159,9 +161,10 @@ Notes:
   (seeded from the config, changeable at runtime), so one generated SDK serves every
   project (a route that a given project doesn't have returns 404 at runtime).
 - Every `/api/...` operation in the document is generated except the hand-written ones above
-  (`Authentication`, `Storage`/`SharedStorage`, `Realtime`, `Matchmaking`, `GameSession`) and
-  the surface the portal deliberately excludes (the custom-page endpoints, and the generic
-  `RunScript` template — replaced by one concrete method per script route). This includes
+  (`Authentication`, `Storage`/`SharedStorage`, `Realtime`, `Matchmaking`, `GameSession`,
+  `Proxy`, `Triton`, `Sidecar`) and the surface the portal deliberately excludes (the
+  custom-page endpoints, and the generic `RunScript` template — replaced by one concrete method
+  per script route). This includes
   endpoints outside the `api/{projectId}/...` shape — e.g. `api/maps/tiles/{x}/{y}/{z}.vector`.
   Path params (here `x/y/z`) and query-string params become method arguments, and a JSON
   request body becomes a `body` argument; only `projectId`/`pid` always come from the client.
@@ -419,6 +422,95 @@ realtime.LeaveSession(sessionId);   // stop receiving its broadcasts
   definition's player-broadcast / player-set-data flags (a `403` result when players aren't
   allowed — a server-side caller uses the flags differently).
 - The join subscription is reconnect-safe (re-applied automatically by the realtime client).
+
+## Reverse proxy
+
+Call a third-party API through a per-project **proxy target** configured on the portal (base
+URL, allowed verbs, injected headers, and a credential read from the calling player's own
+*secret* player-data) — so the client uses its own session/token **without that credential ever
+living in the build**. The caller must be logged in and a player of the project; the target name
+picks which upstream. Everything returns a `LelwareResult` (no exceptions).
+
+```csharp
+// one JSON GET through the "pixiv" target (path is relative to the target's base URL):
+var r = await client.ProxyJsonAsync<IllustDto>("pixiv", "ajax/illust/123");
+if (r.Ok) Debug.Log(r.Data.title);
+
+// a binary upstream (image) → raw bytes:
+var img = await client.ProxyBytesAsync("pixiv", "img-original/.../1_p0.jpg");
+
+// fan 200 sub-requests out in ONE round-trip (each item keeps its own status/body/error):
+var batch = await client.ProxyBatchAsync("pixiv", new ProxyEndpoints.ProxyBatchRequest {
+    Requests = { new ProxyEndpoints.ProxyBatchItem { Path = "ajax/user/1" },
+                 new ProxyEndpoints.ProxyBatchItem { Path = "ajax/user/2" } }
+});
+if (batch.Ok) foreach (var it in batch.Data.Responses)
+    Debug.Log($"{it.Path} → {it.Status}");
+
+// drop this player's cached entries for a path after a mutation:
+await client.ProxyPurgeAsync("pixiv", "ajax/illust/123");
+```
+
+- `ProxyJsonAsync<T>` / `ProxyBytesAsync` default to GET — pass `method`/`body` for other verbs
+  (subject to the target's allow-list). A `body` is sent as `application/json`; for other content
+  types use `ProxyBatchAsync` (its items carry an explicit `ContentType`).
+- The batch call is `200` even on partial failure — inspect each `ProxyBatchResponseItem`'s
+  `Status`/`Error`; binary item bodies come back base64 (`BodyBase64` set — use `GetBytes()`).
+
+## Triton (inference server)
+
+If a project uses Triton, `GetTritonEndpointAsync` resolves **how this player should reach it**
+right now — straight to an on-prem box on the LAN, or through the portal's gRPC ingress. The
+inference itself is a gRPC call your app makes with its own Triton client against the returned
+address (a gRPC channel isn't something `UnityWebRequest` can carry, so the SDK stops at the
+address).
+
+```csharp
+var t = await client.GetTritonEndpointAsync();
+if (t.Ok) switch (t.Data.Mode)
+{
+    case TritonEndpoints.TritonAccessMode.Direct: DialGrpc(t.Data.GrpcUrl); break; // LAN box
+    case TritonEndpoints.TritonAccessMode.Proxy:  DialGrpc(t.Data.GrpcUrl); break; // portal ingress
+    case TritonEndpoints.TritonAccessMode.Unavailable: /* no inference right now */ break;
+}
+```
+
+## Sidecar workers
+
+Attach a **worker** to a project's sidecar queues and execute jobs over a low-latency WebSocket
+(push-to-wake + pull-to-claim). `LelwareSidecar` handles the whole protocol — claim, run your
+handler, report complete/fail, keep leases alive, reconnect with backoff.
+
+> **A worker authenticates with an API key** (`X-Api-Key`: the portal-global key **or** the
+> owning org's key), NOT a player login — it's trusted infrastructure. That key is a secret, so
+> only run a worker where you can hold it safely (a server / a trusted machine / a headless
+> build), **never in a shipped game client**. Your handler runs on a **background thread** — don't
+> touch Unity APIs directly from it; marshal to the main thread yourself if needed.
+
+```csharp
+var worker = new LelwareSidecar(client, apiKey: "…", node: "gpu-1",
+    queues: new[] { "densify" },
+    handler: async (job, ct) =>
+    {
+        var input  = job.PayloadAs<MyInput>();   // the enqueued payload, typed
+        var output = await DoWork(input, ct);
+        return output;                            // serialized as the job's result JSON
+        // throw to FAIL the job — it's re-queued while retries remain, else dead-lettered
+    });
+worker.Start();
+// …on teardown:
+worker.Stop();
+
+// producing jobs (also API-key auth — trusted side only):
+var enq = await worker.EnqueueAsync("densify", new MyInput { /* … */ });
+if (enq.Ok) Debug.Log("queued job " + enq.Data);
+```
+
+- Serves every queue you list; the portal's `wake` push claims a job the instant it lands, and a
+  fallback poll drains anything missed during a reconnect gap.
+- **Transport:** defaults to `ClientWebSocketTransport` (standalone / mobile / dedicated-server;
+  **not** WebGL). For WebGL or a custom stack, pass an `ILelwareRealtimeSocket` factory — the same
+  seam realtime uses.
 
 ## Notes
 
