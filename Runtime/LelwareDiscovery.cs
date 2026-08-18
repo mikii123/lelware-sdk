@@ -36,10 +36,9 @@ namespace Lelware.Sdk
         public string BaseUrl;
 
         /// <summary>
-        ///     Portal gRPC ingress reachable on the LAN (the Triton passthrough), e.g.
-        ///     <c>http://192.168.1.50:8081</c> — a SEPARATE port from <see cref="BaseUrl" /> (cleartext
-        ///     gRPC needs its own HTTP/2-only endpoint). Null when the portal advertises no gRPC endpoint;
-        ///     use it to dial portal-proxied Triton without a hard-coded URL.
+        ///     Optional portal gRPC ingress reachable on the LAN, e.g. <c>http://192.168.1.50:8081</c> —
+        ///     a SEPARATE port from <see cref="BaseUrl" /> (cleartext gRPC needs its own HTTP/2-only
+        ///     endpoint). Null when the portal advertises no gRPC endpoint.
         /// </summary>
         public string GrpcBaseUrl;
 

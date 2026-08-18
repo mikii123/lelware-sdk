@@ -4,8 +4,8 @@ Client SDK for the LelwarePortal client API. It logs in with a bearer token, cac
 and attaches it to every request, and always sends the `Is-Client: api-client` header.
 Most of the client surface is **generated from the portal's OpenAPI document** at build
 time; a set of features whose shape doesn't fit a generated JSON call — authentication,
-object storage, realtime, matchmaking, game sessions, the reverse proxy, Triton endpoint
-resolution and sidecar workers — are **dedicated hand-written methods**. For custom scripts
+object storage, realtime, matchmaking, game sessions, the reverse proxy and sidecar workers —
+are **dedicated hand-written methods**. For custom scripts
 there's a generic escape hatch (bring your own request/response types).
 
 ## Installation (UPM)
@@ -136,9 +136,8 @@ The portal exposes an OpenAPI 3 document for the client API (`GET /api/sdk/OpenA
 for (almost) every operation in it. A handful of features are **hand-written** instead,
 because their shape doesn't fit a generated JSON round-trip: `Authentication`
 (login/register), `Storage` + `SharedStorage` (presigned multipart), `Realtime`,
-`Matchmaking`, `GameSession`, `Proxy` (transparent pass-through), `Triton` (endpoint
-resolution) and `Sidecar` (a WebSocket worker) — the portal keeps these out of the generated
-document. Everything else — the static endpoints (`GetSettings`, player-data CRUD,
+`Matchmaking`, `GameSession`, `Proxy` (transparent pass-through) and `Sidecar` (a WebSocket
+worker) — the portal keeps these out of the generated document. Everything else — the static endpoints (`GetSettings`, player-data CRUD,
 project-data CRUD) and the project's custom-script routes — is generated.
 
 1. In the portal, set the API key in `appsettings` (`Api:Key`).
@@ -162,7 +161,7 @@ Notes:
   project (a route that a given project doesn't have returns 404 at runtime).
 - Every `/api/...` operation in the document is generated except the hand-written ones above
   (`Authentication`, `Storage`/`SharedStorage`, `Realtime`, `Matchmaking`, `GameSession`,
-  `Proxy`, `Triton`, `Sidecar`) and the surface the portal deliberately excludes (the
+  `Proxy`, `Sidecar`) and the surface the portal deliberately excludes (the
   custom-page endpoints, and the generic `RunScript` template — replaced by one concrete method
   per script route). This includes
   endpoints outside the `api/{projectId}/...` shape — e.g. `api/maps/tiles/{x}/{y}/{z}.vector`.
@@ -456,24 +455,6 @@ await client.ProxyPurgeAsync("pixiv", "ajax/illust/123");
   types use `ProxyBatchAsync` (its items carry an explicit `ContentType`).
 - The batch call is `200` even on partial failure — inspect each `ProxyBatchResponseItem`'s
   `Status`/`Error`; binary item bodies come back base64 (`BodyBase64` set — use `GetBytes()`).
-
-## Triton (inference server)
-
-If a project uses Triton, `GetTritonEndpointAsync` resolves **how this player should reach it**
-right now — straight to an on-prem box on the LAN, or through the portal's gRPC ingress. The
-inference itself is a gRPC call your app makes with its own Triton client against the returned
-address (a gRPC channel isn't something `UnityWebRequest` can carry, so the SDK stops at the
-address).
-
-```csharp
-var t = await client.GetTritonEndpointAsync();
-if (t.Ok) switch (t.Data.Mode)
-{
-    case TritonEndpoints.TritonAccessMode.Direct: DialGrpc(t.Data.GrpcUrl); break; // LAN box
-    case TritonEndpoints.TritonAccessMode.Proxy:  DialGrpc(t.Data.GrpcUrl); break; // portal ingress
-    case TritonEndpoints.TritonAccessMode.Unavailable: /* no inference right now */ break;
-}
-```
 
 ## Sidecar workers
 
