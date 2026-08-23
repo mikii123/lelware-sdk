@@ -431,23 +431,23 @@ living in the build**. The caller must be logged in and a player of the project;
 picks which upstream. Everything returns a `LelwareResult` (no exceptions).
 
 ```csharp
-// one JSON GET through the "pixiv" target (path is relative to the target's base URL):
-var r = await client.ProxyJsonAsync<IllustDto>("pixiv", "ajax/illust/123");
+// one JSON GET through the "myapi" target (path is relative to the target's base URL):
+var r = await client.ProxyJsonAsync<ItemDto>("myapi", "v1/items/123");
 if (r.Ok) Debug.Log(r.Data.title);
 
 // a binary upstream (image) → raw bytes:
-var img = await client.ProxyBytesAsync("pixiv", "img-original/.../1_p0.jpg");
+var img = await client.ProxyBytesAsync("myapi", "images/thumb.jpg");
 
 // fan 200 sub-requests out in ONE round-trip (each item keeps its own status/body/error):
-var batch = await client.ProxyBatchAsync("pixiv", new ProxyEndpoints.ProxyBatchRequest {
-    Requests = { new ProxyEndpoints.ProxyBatchItem { Path = "ajax/user/1" },
-                 new ProxyEndpoints.ProxyBatchItem { Path = "ajax/user/2" } }
+var batch = await client.ProxyBatchAsync("myapi", new ProxyEndpoints.ProxyBatchRequest {
+    Requests = { new ProxyEndpoints.ProxyBatchItem { Path = "v1/users/1" },
+                 new ProxyEndpoints.ProxyBatchItem { Path = "v1/users/2" } }
 });
 if (batch.Ok) foreach (var it in batch.Data.Responses)
     Debug.Log($"{it.Path} → {it.Status}");
 
 // drop this player's cached entries for a path after a mutation:
-await client.ProxyPurgeAsync("pixiv", "ajax/illust/123");
+await client.ProxyPurgeAsync("myapi", "v1/items/123");
 ```
 
 - `ProxyJsonAsync<T>` / `ProxyBytesAsync` default to GET — pass `method`/`body` for other verbs

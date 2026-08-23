@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json.Linq;
 
@@ -15,8 +16,9 @@ namespace Lelware.Sdk.Editor
     ///     Deliberately a SMALL, targeted OpenAPI reader (not a general-purpose one), but general
     ///     enough for every path this portal emits: any number of path parameters anywhere in the
     ///     route (e.g. <c>/api/maps/tiles/{x}/{y}/{z}.vector</c>), query
-    ///     parameters, a JSON request body, and a JSON / binary / empty response. Anything it can't
-    ///     classify degrades to <c>object</c> rather than failing.
+    ///     parameters, a request body that is JSON, a raw <c>application/octet-stream</c> upload, or a
+    ///     <c>multipart/form-data</c> form (text fields + file parts), and a JSON / binary / empty
+    ///     response. Anything it can't classify degrades to <c>object</c> rather than failing.
     ///
     ///     The full request path is built by the generated method itself, substituting each
     ///     <c>{param}</c>: the project-id token (<c>{projectId}</c>/<c>{pid}</c>) is filled from
@@ -52,11 +54,188 @@ namespace Lelware.Sdk.Editor
             sb.AppendLine("namespace Lelware.Sdk.Generated");
             sb.AppendLine("{");
 
+            // Give every inline enum a name (see HoistInlineEnums) BEFORE emitting anything, so the
+            // schema + type paths below see a uniform $ref-to-named-enum everywhere.
+            HoistInlineEnums(doc);
+
             EmitSchemas(sb, doc);
             EmitOperations(sb, doc);
 
             sb.AppendLine("}");
             return sb.ToString();
+        }
+
+        // --- inline-enum hoisting ---------------------------------------------
+
+        // Swashbuckle emits many enums INLINE — a property/parameter schema of {type, enum:[...]}
+        // with no $ref (query-parameter enums are ALWAYS inline). An inline enum has no name, so the
+        // generator would fall back to its base type (string/int) and lose the enum entirely. This
+        // pre-pass finds every inline enum, HOISTS it into a named components.schemas entry, and
+        // rewrites the site to a $ref — after which the normal schema/type path emits a real C# enum
+        // and references it. Identical enums (same base type + value set) are coalesced into ONE
+        // generated type, so the same enum used in many places doesn't spawn duplicates.
+        private static void HoistInlineEnums(JObject doc)
+        {
+            var components = doc["components"] as JObject;
+            if (components == null)
+            {
+                components = new JObject();
+                doc["components"] = components;
+            }
+
+            var schemas = components["schemas"] as JObject;
+            if (schemas == null)
+            {
+                schemas = new JObject();
+                components["schemas"] = schemas;
+            }
+
+            // Names already taken (existing schemas) + a signature->name map for coalescing.
+            var used = new HashSet<string>(schemas.Properties().Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+            var bySignature = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            // 1) Descendants of every existing component schema (a DTO's properties/items, etc.).
+            //    ToList() because HoistInSchema adds to 'schemas' as it goes.
+            foreach (var s in schemas.Properties().ToList())
+            {
+                HoistInSchema(s.Value as JObject, s.Name, schemas, used, bySignature);
+            }
+
+            // 2) Request/response BODY schemas. Deliberately NOT query/path parameters: a body (and
+            //    a DTO property) is JSON-(de)serialized by Newtonsoft, where the enum's StringEnum-
+            //    Converter emits the correct wire value — whereas a query param is stringified with
+            //    Convert.ToString, which would emit the C# MEMBER name, not the wire value. So enum
+            //    params stay their base type (string), and only JSON-carried enums become C# enums.
+            var paths = doc["paths"] as JObject;
+            if (paths == null)
+            {
+                return;
+            }
+
+            foreach (var pathProp in paths.Properties())
+            {
+                var item = pathProp.Value as JObject;
+                if (item == null)
+                {
+                    continue;
+                }
+
+                foreach (var verbProp in item.Properties())
+                {
+                    var op = verbProp.Value as JObject;
+                    if (op == null)
+                    {
+                        continue;
+                    }
+
+                    HoistInBody(op["requestBody"] as JObject, schemas, used, bySignature);
+                    foreach (var resp in (op["responses"] as JObject)?.Properties() ?? Enumerable.Empty<JProperty>())
+                    {
+                        HoistInBody(resp.Value as JObject, schemas, used, bySignature);
+                    }
+                }
+            }
+        }
+
+        // Hoists inline enums out of every media-type schema of a requestBody / response node.
+        private static void HoistInBody(JObject bodyNode, JObject schemas, HashSet<string> used,
+            Dictionary<string, string> bySig)
+        {
+            var content = bodyNode?["content"] as JObject;
+            if (content == null)
+            {
+                return;
+            }
+
+            foreach (var media in content.Properties())
+            {
+                var mediaObj = media.Value as JObject;
+                // A body schema is usually a $ref to a DTO (whose properties are handled in step 1);
+                // this catches an enum inlined DIRECTLY as the body/response schema.
+                HoistRef(mediaObj, "schema", "Body", schemas, used, bySig);
+                HoistInSchema(mediaObj?["schema"] as JObject, "Body", schemas, used, bySig);
+            }
+        }
+
+        // Recursively hoists inline enums nested inside a schema node: its properties, array items,
+        // map value schema, and allOf/anyOf/oneOf branches. Does NOT hoist the node itself (a parent
+        // rewrites the node via HoistRef); a $ref node has no inline children, so recursion stops.
+        private static void HoistInSchema(JObject schema, string nameHint, JObject schemas,
+            HashSet<string> used, Dictionary<string, string> bySig)
+        {
+            if (schema == null)
+            {
+                return;
+            }
+
+            var props = schema["properties"] as JObject;
+            if (props != null)
+            {
+                foreach (var p in props.Properties().ToList())
+                {
+                    var childHint = nameHint + "_" + p.Name;
+                    HoistRef(props, p.Name, childHint, schemas, used, bySig);
+                    HoistInSchema(props[p.Name] as JObject, childHint, schemas, used, bySig);
+                }
+            }
+
+            if (schema["items"] is JObject)
+            {
+                HoistRef(schema, "items", nameHint + "_Item", schemas, used, bySig);
+                HoistInSchema(schema["items"] as JObject, nameHint + "_Item", schemas, used, bySig);
+            }
+
+            if (schema["additionalProperties"] is JObject)
+            {
+                HoistRef(schema, "additionalProperties", nameHint + "_Value", schemas, used, bySig);
+                HoistInSchema(schema["additionalProperties"] as JObject, nameHint + "_Value", schemas, used, bySig);
+            }
+
+            foreach (var comp in new[] { "allOf", "anyOf", "oneOf" })
+            {
+                var arr = schema[comp] as JArray;
+                if (arr == null)
+                {
+                    continue;
+                }
+
+                foreach (var sub in arr.OfType<JObject>().ToList())
+                {
+                    HoistInSchema(sub, nameHint, schemas, used, bySig);
+                }
+            }
+        }
+
+        // If parent[key] is an INLINE enum schema (no $ref, has a non-empty "enum" array), moves it
+        // into components.schemas under a unique name (coalescing identical enums) and replaces
+        // parent[key] with a $ref to it. No-op for anything that isn't an inline enum.
+        private static void HoistRef(JObject parent, string key, string nameHint, JObject schemas,
+            HashSet<string> used, Dictionary<string, string> bySig)
+        {
+            var node = parent?[key] as JObject;
+            if (node == null || node["$ref"] != null)
+            {
+                return;
+            }
+
+            var values = node["enum"] as JArray;
+            if (values == null || values.Count == 0)
+            {
+                return;
+            }
+
+            var type = node["type"]?.ToString() ?? "string";
+
+            // Coalesce: an identical (base type + value set) enum reuses the already-generated type.
+            var signature = type + "|" + string.Join("", values.Select(v => v?.ToString() ?? string.Empty));
+            if (!bySig.TryGetValue(signature, out var enumName))
+            {
+                enumName = Unique(used, SanitizeType(nameHint));
+                schemas[enumName] = new JObject { ["type"] = type, ["enum"] = values.DeepClone() };
+                bySig[signature] = enumName;
+            }
+
+            parent[key] = new JObject { ["$ref"] = "#/components/schemas/" + enumName };
         }
 
         // --- components.schemas -> DTO classes --------------------------------
@@ -73,6 +252,16 @@ namespace Lelware.Sdk.Editor
             {
                 var name = SanitizeType(prop.Name);
                 var schema = prop.Value as JObject;
+
+                // A component schema carrying an "enum" array is an enumeration, NOT a DTO — emit a
+                // real C# enum instead of an empty class (which is what the class path below would
+                // wrongly produce). A property/param that $refs this schema then gets the enum type.
+                var enumValues = schema?["enum"] as JArray;
+                if (enumValues != null && enumValues.Count > 0)
+                {
+                    EmitEnum(sb, name, schema, enumValues);
+                    continue;
+                }
 
                 sb.AppendLine("    [Serializable]");
                 sb.AppendLine($"    public partial class {name}");
@@ -101,6 +290,66 @@ namespace Lelware.Sdk.Editor
                 sb.AppendLine("    }");
                 sb.AppendLine();
             }
+        }
+
+        // Emits a component enum schema as a C# enum. STRING-backed enums (the common case) carry a
+        // Newtonsoft StringEnumConverter so they (de)serialize by NAME, and each member keeps its
+        // exact wire spelling via [EnumMember] — wire values like "already_rectified" aren't valid
+        // C# identifiers, so the sanitised member name would otherwise not round-trip. INTEGER-backed
+        // enums pin each member to its literal value (member names from the x-enumNames / x-enum-
+        // varnames vendor extension when present, else Value{n}). Fully-qualified attribute names so
+        // the generated file needs no extra usings.
+        private static void EmitEnum(StringBuilder sb, string name, JObject schema, JArray values)
+        {
+            // Default to string-backed: it's the portal's shape and the safe assumption when absent.
+            var isString = (schema["type"]?.ToString() ?? "string") == "string";
+            var varNames = (schema["x-enumNames"] ?? schema["x-enum-varnames"]) as JArray;
+
+            if (isString)
+            {
+                // Round-trip by name, not ordinal — so the enum survives added/reordered members.
+                sb.AppendLine("    [JsonConverter(typeof(global::Newtonsoft.Json.Converters.StringEnumConverter))]");
+            }
+
+            sb.AppendLine($"    public enum {name}");
+            sb.AppendLine("    {");
+
+            var used = new HashSet<string>();
+            for (var i = 0; i < values.Count; i++)
+            {
+                var raw = values[i];
+                if (isString)
+                {
+                    var wire = raw?.ToString() ?? string.Empty;
+                    var member = SanitizeType(wire);
+                    if (string.IsNullOrEmpty(member))
+                    {
+                        member = "Value" + i;
+                    }
+
+                    member = Unique(used, member); // two wire values may sanitise to the same identifier.
+                    // Preserve the exact wire spelling regardless of how the identifier was sanitised.
+                    sb.AppendLine($"        [System.Runtime.Serialization.EnumMember(Value = \"{Escape(wire)}\")]");
+                    sb.AppendLine($"        {member},");
+                }
+                else
+                {
+                    var num = raw?.ToString() ?? i.ToString();
+                    var member = varNames != null && i < varNames.Count
+                        ? SanitizeType(varNames[i]?.ToString())
+                        : "Value" + num;
+                    if (string.IsNullOrEmpty(member))
+                    {
+                        member = "Value" + i;
+                    }
+
+                    member = Unique(used, member);
+                    sb.AppendLine($"        {member} = {num},");
+                }
+            }
+
+            sb.AppendLine("    }");
+            sb.AppendLine();
         }
 
         // --- paths -> extension methods ---------------------------------------
@@ -157,7 +406,7 @@ namespace Lelware.Sdk.Editor
             // Collect declared parameter types up front: path params feed URL substitution,
             // query params become trailing method args.
             var pathParamTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var queryParams = new List<(string member, string wire, string type)>();
+            var queryParams = new List<(string member, string wire, string type, bool required)>();
             foreach (var p in (op["parameters"] as JArray) ?? new JArray())
             {
                 var loc = p["in"]?.ToString();
@@ -173,7 +422,10 @@ namespace Lelware.Sdk.Editor
                 }
                 else if (loc == "query")
                 {
-                    queryParams.Add((SanitizeMember(pname), pname, ResolveType(p["schema"] as JObject)));
+                    // A query param defaults to OPTIONAL unless the doc marks it required — so an
+                    // optional one becomes a defaulted C# parameter the caller can just omit.
+                    var required = p["required"]?.Type == JTokenType.Boolean && p["required"].Value<bool>();
+                    queryParams.Add((SanitizeMember(pname), pname, ResolveType(p["schema"] as JObject), required));
                 }
             }
 
@@ -190,24 +442,62 @@ namespace Lelware.Sdk.Editor
 
             var methodName = Unique(used, SanitizeType(baseName)) + "Async";
 
-            var bodyType = ResolveBodyType(op);
+            var bodyKind = ClassifyBody(op, out var jsonBodyType, out var multipartFields); // json | octet | multipart | none
             var kind = ClassifyResponse(op, out var responseType); // "json" | "binary" | "none"
 
-            // Signature: path args, then body, then query args, then ct.
+            // Signature: the REQUIRED args first (path, request body, required query), then the
+            // OPTIONAL args (optional query — each defaulted, the octet content type, ct). C#
+            // forbids a defaulted parameter before a non-defaulted one, so the split is mandatory.
             var sig = new List<string> { "this global::Lelware.Sdk.LelwareClient client" };
             foreach (var pa in pathArgs)
             {
                 sig.Add(pa.type + " " + pa.member);
             }
 
-            if (bodyType != null)
+            switch (bodyKind)
             {
-                sig.Add(bodyType + " body");
+                case BodyKind.Json:
+                    sig.Add(jsonBodyType + " body");
+                    break;
+                case BodyKind.Octet:
+                    // A raw application/octet-stream upload: the caller supplies the bytes directly.
+                    sig.Add("byte[] body");
+                    break;
+                case BodyKind.Multipart:
+                    // One method arg per declared form field: byte[] for a file part, string otherwise.
+                    foreach (var f in multipartFields)
+                    {
+                        sig.Add((f.IsFile ? "byte[] " : "string ") + f.Member);
+                    }
+
+                    break;
             }
 
+            // Required query params stay in the required section (no default).
             foreach (var q in queryParams)
             {
-                sig.Add(q.type + " " + q.member);
+                if (q.required)
+                {
+                    sig.Add(q.type + " " + q.member);
+                }
+            }
+
+            // --- optional args (all defaulted) ---
+            // Optional query params: nullable-typed with a null default so the caller can omit them
+            // AND we can tell "omitted" (null) from a real value at request time (see below).
+            foreach (var q in queryParams)
+            {
+                if (!q.required)
+                {
+                    sig.Add(OptionalType(q.type) + " " + q.member + " = null");
+                }
+            }
+
+            // The octet content type is optional (defaults to octet-stream) so the common case needs
+            // no argument.
+            if (bodyKind == BodyKind.Octet)
+            {
+                sig.Add("string contentType = \"application/octet-stream\"");
             }
 
             sig.Add("CancellationToken ct = default");
@@ -237,31 +527,49 @@ namespace Lelware.Sdk.Editor
                 sb.AppendLine("            var __q = new Dictionary<string, string>();");
                 foreach (var q in queryParams)
                 {
-                    sb.AppendLine(
-                        $"            __q[\"{Escape(q.wire)}\"] = Convert.ToString({q.member}, CultureInfo.InvariantCulture);");
+                    if (q.required)
+                    {
+                        sb.AppendLine(
+                            $"            __q[\"{Escape(q.wire)}\"] = Convert.ToString({q.member}, CultureInfo.InvariantCulture);");
+                    }
+                    else
+                    {
+                        // Only send an optional param the caller actually set — a null (the default)
+                        // means "omitted", so we skip it rather than sending a spurious value (e.g. the
+                        // "0" a non-nullable numeric default would stringify to).
+                        sb.AppendLine(
+                            $"            if ({q.member} != null) __q[\"{Escape(q.wire)}\"] = Convert.ToString({q.member}, CultureInfo.InvariantCulture);");
+                    }
                 }
 
                 sb.AppendLine("            __path += BuildQuery(__q);");
             }
 
-            var bodyExpr = bodyType != null ? "JsonConvert.SerializeObject(body)" : "null";
-            var verbLiteral = verb.ToUpperInvariant();
-
-            switch (kind)
+            // Multipart: assemble the form sections from the field args (a file part per byte[],
+            // a text section per string). Built here so the send call below is a one-liner like the
+            // others. Fully-qualified because the generated file doesn't `using UnityEngine.Networking`.
+            if (bodyKind == BodyKind.Multipart)
             {
-                case "json":
-                    sb.AppendLine(
-                        $"            return client.SendPathAsync<{responseType}>(\"{verbLiteral}\", __path, {bodyExpr}, ct);");
-                    break;
-                case "binary":
-                    sb.AppendLine(
-                        $"            return client.SendBytesAsync(\"{verbLiteral}\", __path, {bodyExpr}, ct);");
-                    break;
-                default:
-                    sb.AppendLine(
-                        $"            return client.SendPathAsync(\"{verbLiteral}\", __path, {bodyExpr}, ct);");
-                    break;
+                sb.AppendLine(
+                    "            var __form = new List<global::UnityEngine.Networking.IMultipartFormSection>();");
+                foreach (var f in multipartFields)
+                {
+                    if (f.IsFile)
+                    {
+                        // Skip a null file so an optional upload doesn't add an empty part.
+                        sb.AppendLine(
+                            $"            if ({f.Member} != null) __form.Add(new global::UnityEngine.Networking.MultipartFormFileSection(\"{Escape(f.Wire)}\", {f.Member}, \"{Escape(f.Wire)}\", \"application/octet-stream\"));");
+                    }
+                    else
+                    {
+                        sb.AppendLine(
+                            $"            __form.Add(new global::UnityEngine.Networking.MultipartFormDataSection(\"{Escape(f.Wire)}\", Convert.ToString({f.Member}, CultureInfo.InvariantCulture) ?? string.Empty));");
+                    }
+                }
             }
+
+            var verbLiteral = verb.ToUpperInvariant();
+            sb.AppendLine($"            return {BuildSendCall(bodyKind, kind, responseType, verbLiteral)};");
 
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -342,8 +650,8 @@ namespace Lelware.Sdk.Editor
         // own project id — rather than the generic {projectId}/{pid} token) the HTTP verb is
         // inserted right after that project segment, BEFORE the rest of the path. This disambiguates
         // PUT/POST/DELETE on the same resource — which strip to the same literal name and would
-        // otherwise get ugly numeric suffixes (Superlikes2/3) — into readable distinct names, e.g.
-        // DELETE /api/pixivfe/v2/library/superlikes/{id} -> "PixivfeDeleteV2LibrarySuperlikes".
+        // otherwise get ugly numeric suffixes (Favorites2/3) — into readable distinct names, e.g.
+        // DELETE /api/myapp/v2/library/favorites/{id} -> "MyappDeleteV2LibraryFavorites".
         //
         // The generic, {projectId}-templated core endpoints are left as-is (verb NOT inserted):
         // their action names already read with the verb baked in (GetSettings, SetPlayerData), so a
@@ -417,10 +725,138 @@ namespace Lelware.Sdk.Editor
             return "binary"; // octet-stream / protobuf / image / etc.
         }
 
-        private static string ResolveBodyType(JObject op)
+        // The shape of an operation's request body, driving both the method signature and which
+        // LelwareClient transport method the generated call targets.
+        private enum BodyKind
         {
-            var schema = op?["requestBody"]?["content"]?["application/json"]?["schema"] as JObject;
-            return schema == null ? null : ResolveType(schema);
+            None,      // no request body (GET/DELETE, or an empty POST)
+            Json,      // application/json  -> a typed 'body' object, serialized to JSON
+            Octet,     // application/octet-stream -> a raw byte[] 'body' + optional content type
+            Multipart  // multipart/form-data -> one arg per form field (byte[] file / string text)
+        }
+
+        // One field of a multipart/form-data request body.
+        private readonly struct MultipartField
+        {
+            public readonly string Wire;   // the form field name exactly as declared on the wire
+            public readonly string Member; // the sanitised C# parameter name
+            public readonly bool IsFile;   // true => a byte[] file part; false => a string text field
+
+            public MultipartField(string wire, string member, bool isFile)
+            {
+                Wire = wire;
+                Member = member;
+                IsFile = isFile;
+            }
+        }
+
+        // Classifies the request body by its declared media type, mirroring ClassifyResponse:
+        //   • application/json         -> Json      (typed via the JSON schema)
+        //   • application/octet-stream -> Octet     (raw byte[] upload)
+        //   • multipart/form-data      -> Multipart (form fields + file parts)
+        //   • absent / unrecognised    -> None
+        // application/json wins when several are present (the portal's normal shape). For Multipart,
+        // 'fields' carries the form fields (empty list if the schema declared none); for the others
+        // it's null. 'jsonType' is the resolved C# type for a Json body, else null.
+        private static BodyKind ClassifyBody(JObject op, out string jsonType, out List<MultipartField> fields)
+        {
+            jsonType = null;
+            fields = null;
+
+            var content = op?["requestBody"]?["content"] as JObject;
+            if (content == null)
+            {
+                return BodyKind.None;
+            }
+
+            var json = content["application/json"] as JObject;
+            if (json != null)
+            {
+                jsonType = ResolveType(json["schema"] as JObject);
+                return BodyKind.Json;
+            }
+
+            if (content["application/octet-stream"] != null)
+            {
+                return BodyKind.Octet;
+            }
+
+            var multipart = content["multipart/form-data"] as JObject;
+            if (multipart != null)
+            {
+                fields = CollectMultipartFields(multipart["schema"] as JObject);
+                return BodyKind.Multipart;
+            }
+
+            return BodyKind.None;
+        }
+
+        // A multipart schema is an object whose properties are the form fields. A property typed
+        // {type:string, format:binary} (or format:byte) is a FILE part -> byte[]; every other
+        // property is sent as a text field -> string. An absent/empty schema yields no fields (the
+        // method then posts an empty form — degenerate but valid).
+        private static List<MultipartField> CollectMultipartFields(JObject schema)
+        {
+            var fields = new List<MultipartField>();
+            var props = schema?["properties"] as JObject;
+            if (props == null)
+            {
+                return fields;
+            }
+
+            foreach (var p in props.Properties())
+            {
+                var wire = p.Name;
+                var member = SanitizeMember(wire);
+                var format = (p.Value as JObject)?["format"]?.ToString();
+                var isFile = format == "binary" || format == "byte";
+                fields.Add(new MultipartField(wire, member, isFile));
+            }
+
+            return fields;
+        }
+
+        // Builds the 'client.XxxAsync(...)' call expression for a (request-body, response) pairing.
+        // Each request kind targets its own LelwareClient transport family; the response kind picks the
+        // generic overload (typed JSON), the byte[] overload, or the bodyless one.
+        private static string BuildSendCall(BodyKind bodyKind, string responseKind, string responseType, string verbLiteral)
+        {
+            switch (bodyKind)
+            {
+                case BodyKind.Octet:
+                    switch (responseKind)
+                    {
+                        case "json":
+                            return $"client.SendPathRawAsync<{responseType}>(\"{verbLiteral}\", __path, body, contentType, ct)";
+                        case "binary":
+                            return $"client.SendPathRawBytesAsync(\"{verbLiteral}\", __path, body, contentType, ct)";
+                        default:
+                            return $"client.SendPathRawAsync(\"{verbLiteral}\", __path, body, contentType, ct)";
+                    }
+
+                case BodyKind.Multipart:
+                    switch (responseKind)
+                    {
+                        case "json":
+                            return $"client.SendPathMultipartAsync<{responseType}>(\"{verbLiteral}\", __path, __form, ct)";
+                        case "binary":
+                            return $"client.SendPathMultipartBytesAsync(\"{verbLiteral}\", __path, __form, ct)";
+                        default:
+                            return $"client.SendPathMultipartAsync(\"{verbLiteral}\", __path, __form, ct)";
+                    }
+
+                default: // Json and None both flow through the JSON/string send path.
+                    var bodyExpr = bodyKind == BodyKind.Json ? "JsonConvert.SerializeObject(body)" : "null";
+                    switch (responseKind)
+                    {
+                        case "json":
+                            return $"client.SendPathAsync<{responseType}>(\"{verbLiteral}\", __path, {bodyExpr}, ct)";
+                        case "binary":
+                            return $"client.SendBytesAsync(\"{verbLiteral}\", __path, {bodyExpr}, ct)";
+                        default:
+                            return $"client.SendPathAsync(\"{verbLiteral}\", __path, {bodyExpr}, ct)";
+                    }
+            }
         }
 
         // Maps an OpenAPI schema node to a C# type string, degrading to "object" when unsure.
@@ -435,6 +871,16 @@ namespace Lelware.Sdk.Editor
             if (!string.IsNullOrEmpty(reference))
             {
                 return SanitizeType(reference.Substring(reference.LastIndexOf('/') + 1));
+            }
+
+            // Swashbuckle wraps a $ref in allOf/oneOf/anyOf whenever the property carries sibling
+            // metadata (a description, `nullable`, a default) — OpenAPI 3.0 forbids a sibling next to
+            // a raw $ref. Unwrap a composition that reduces to a SINGLE referenced type so an
+            // enum/DTO property still resolves to that type instead of degrading to `object`.
+            var composed = SingleCompositionMember(schema);
+            if (composed != null)
+            {
+                return ResolveType(composed);
             }
 
             var type = schema["type"]?.ToString();
@@ -457,6 +903,72 @@ namespace Lelware.Sdk.Editor
                     // "object" with no $ref (free-form / anonymous) or unknown -> untyped.
                     return "object";
             }
+        }
+
+        // If 'schema' is a composition (allOf/oneOf/anyOf) that boils down to a SINGLE real member —
+        // ignoring bare marker entries like {"nullable":true} that Swashbuckle adds alongside a ref —
+        // returns that member so the caller can resolve it. Returns null when there's no composition
+        // or more than one real member (e.g. allOf-based inheritance: $ref base + inline props), in
+        // which case the type stays 'object' as before.
+        private static JObject SingleCompositionMember(JObject schema)
+        {
+            foreach (var key in new[] { "allOf", "oneOf", "anyOf" })
+            {
+                var arr = schema[key] as JArray;
+                if (arr == null)
+                {
+                    continue;
+                }
+
+                JObject candidate = null;
+                foreach (var entry in arr)
+                {
+                    var obj = entry as JObject;
+                    if (obj == null)
+                    {
+                        continue;
+                    }
+
+                    // A pure nullable/empty marker (no shape of its own) doesn't count as a member.
+                    var isMarker = obj["$ref"] == null && obj["type"] == null &&
+                                   obj["properties"] == null && obj["enum"] == null && obj["items"] == null;
+                    if (isMarker)
+                    {
+                        continue;
+                    }
+
+                    if (candidate != null)
+                    {
+                        candidate = null; // two real members — not reducible to one type.
+                        break;
+                    }
+
+                    candidate = obj;
+                }
+
+                if (candidate != null)
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        // Nullable form of a C# type, for an OPTIONAL query parameter. Making the parameter
+        // nullable with a `= null` default lets a caller omit it AND lets the generated body tell
+        // "omitted" (null) apart from a real value — so an unset optional param is never sent as a
+        // stringified default (e.g. a non-nullable int would otherwise go on the wire as "0").
+        // Reference-ish types (string/object/List<>) and already-nullable value types are returned
+        // unchanged; a bare value type (int/long/double/float/bool) gets a trailing '?'.
+        private static string OptionalType(string type)
+        {
+            if (type == "string" || type == "object" || type.StartsWith("List<") || type.EndsWith("?"))
+            {
+                return type;
+            }
+
+            return type + "?";
         }
 
         // --- emitted query helper ---------------------------------------------

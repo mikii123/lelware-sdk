@@ -171,6 +171,29 @@ namespace Lelware.Sdk
             };
         }
 
+        /// <summary>
+        ///     Downloads raw bytes from a presigned GET URL returned by the portal. The URL is
+        ///     self-authenticating, so this request deliberately carries no portal authorization
+        ///     headers and the signed URL is never written to logs.
+        /// </summary>
+        public static async Task<LelwareResult<byte[]>> DownloadPresignedUrlAsync(
+            this LelwareClient client, string url, LelwareTransferProgress progress = null, CancellationToken ct = default)
+        {
+            var (bytes, code, err) = await GetBytesAsync(client, url, progress, ct);
+            if (err == null)
+            {
+                progress?.Complete();
+            }
+
+            return new LelwareResult<byte[]>
+            {
+                Error = err != null,
+                Code = code,
+                Message = err,
+                Data = bytes
+            };
+        }
+
         /// <summary>List the player's stored objects (one page; pass the returned token for more).</summary>
         public static Task<LelwareResult<ListAssetsResponse>> ListAssetsAsync(
             this LelwareClient client, string continuationToken = null, CancellationToken ct = default)

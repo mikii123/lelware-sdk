@@ -113,7 +113,7 @@ namespace Lelware.Sdk
 
             // Login is the one call made WITHOUT a bearer token (we don't have one yet),
             // but it still carries Is-Client so the portal treats us as an API client.
-            var raw = await SendRawAsync(UnityWebRequest.kHttpVerbPOST, url, bodyJson, includeAuth: false, ct);
+            var raw = await SendRawAsync(UnityWebRequest.kHttpVerbPOST, url, PreparedBody.Json(bodyJson), includeAuth: false, ct);
 
             // Carry the transport/status outcome through unchanged; only proceed to parse on 2xx.
             var result = new LelwareResult<LoginResult>
@@ -175,7 +175,7 @@ namespace Lelware.Sdk
 
             // Like login, register runs WITHOUT a bearer token (we don't have one yet) but still
             // carries Is-Client so the portal treats us as an API client.
-            var raw = await SendRawAsync(UnityWebRequest.kHttpVerbPOST, url, bodyJson, includeAuth: false, ct);
+            var raw = await SendRawAsync(UnityWebRequest.kHttpVerbPOST, url, PreparedBody.Json(bodyJson), includeAuth: false, ct);
 
             var result = new LelwareResult<LoginResult>
             {
@@ -326,7 +326,7 @@ namespace Lelware.Sdk
         public async Task<LelwareResult<TResponse>> SendAsync<TResponse>(string verb, string action, string dataKey, string body, CancellationToken ct = default)
         {
             var url = BuildUrl(action, dataKey);
-            var raw = await SendRawAsync(verb, url, body, includeAuth: true, ct);
+            var raw = await SendRawAsync(verb, url, PreparedBody.Json(body), includeAuth: true, ct);
             return Deserialize<TResponse>(raw);
         }
 
@@ -337,7 +337,7 @@ namespace Lelware.Sdk
         public async Task<LelwareResult> SendAsync(string verb, string action, string dataKey, string body, CancellationToken ct = default)
         {
             var url = BuildUrl(action, dataKey);
-            return await SendRawAsync(verb, url, body, includeAuth: true, ct);
+            return await SendRawAsync(verb, url, PreparedBody.Json(body), includeAuth: true, ct);
         }
 
         /// <summary>
@@ -350,14 +350,14 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<TResponse>> SendPathAsync<TResponse>(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            var raw = await SendRawAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
+            var raw = await SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Json(body), includeAuth: true, ct);
             return Deserialize<TResponse>(raw);
         }
 
         /// <summary>Bodyless absolute-path variant — for endpoints whose 2xx body is empty.</summary>
         public async Task<LelwareResult> SendPathAsync(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            return await SendRawAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
+            return await SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Json(body), includeAuth: true, ct);
         }
 
         /// <summary>
@@ -368,7 +368,58 @@ namespace Lelware.Sdk
         /// </summary>
         public async Task<LelwareResult<byte[]>> SendBytesAsync(string verb, string relativePath, string body, CancellationToken ct = default)
         {
-            return await SendRawBytesAsync(verb, BaseUrl + relativePath, body, includeAuth: true, ct);
+            return await SendRawBytesAsync(verb, BaseUrl + relativePath, PreparedBody.Json(body), includeAuth: true, ct);
+        }
+
+        // --- octet-stream (raw binary) request bodies --------------------------
+        // For endpoints whose REQUEST body is application/octet-stream (a raw upload): the caller
+        // hands us the bytes + their content type and we send them verbatim (vs the JSON send
+        // methods, which serialize an object). Three response shapes mirror the JSON path —
+        // typed JSON / empty / raw bytes — so the generator can pair a binary upload with any
+        // response the endpoint declares. A blank contentType defaults to application/octet-stream.
+
+        /// <summary>Octet-stream request, JSON response — raw <paramref name="body" /> up, typed body back.</summary>
+        public async Task<LelwareResult<TResponse>> SendPathRawAsync<TResponse>(string verb, string relativePath, byte[] body, string contentType, CancellationToken ct = default)
+        {
+            var raw = await SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Raw(body, contentType), includeAuth: true, ct);
+            return Deserialize<TResponse>(raw);
+        }
+
+        /// <summary>Octet-stream request, empty (bodyless) response.</summary>
+        public Task<LelwareResult> SendPathRawAsync(string verb, string relativePath, byte[] body, string contentType, CancellationToken ct = default)
+        {
+            return SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Raw(body, contentType), includeAuth: true, ct);
+        }
+
+        /// <summary>Octet-stream request, raw-bytes response.</summary>
+        public Task<LelwareResult<byte[]>> SendPathRawBytesAsync(string verb, string relativePath, byte[] body, string contentType, CancellationToken ct = default)
+        {
+            return SendRawBytesAsync(verb, BaseUrl + relativePath, PreparedBody.Raw(body, contentType), includeAuth: true, ct);
+        }
+
+        // --- multipart/form-data request bodies --------------------------------
+        // For endpoints whose REQUEST body is multipart/form-data (text fields and/or file parts).
+        // The caller builds the sections (a UnityEngine.Networking.MultipartFormDataSection per
+        // text field, a MultipartFormFileSection per file); we serialize them with a Unity-generated
+        // boundary. Same three response shapes as the octet path.
+
+        /// <summary>Multipart request, JSON response.</summary>
+        public async Task<LelwareResult<TResponse>> SendPathMultipartAsync<TResponse>(string verb, string relativePath, List<IMultipartFormSection> form, CancellationToken ct = default)
+        {
+            var raw = await SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Multipart(form), includeAuth: true, ct);
+            return Deserialize<TResponse>(raw);
+        }
+
+        /// <summary>Multipart request, empty (bodyless) response.</summary>
+        public Task<LelwareResult> SendPathMultipartAsync(string verb, string relativePath, List<IMultipartFormSection> form, CancellationToken ct = default)
+        {
+            return SendRawAsync(verb, BaseUrl + relativePath, PreparedBody.Multipart(form), includeAuth: true, ct);
+        }
+
+        /// <summary>Multipart request, raw-bytes response.</summary>
+        public Task<LelwareResult<byte[]>> SendPathMultipartBytesAsync(string verb, string relativePath, List<IMultipartFormSection> form, CancellationToken ct = default)
+        {
+            return SendRawBytesAsync(verb, BaseUrl + relativePath, PreparedBody.Multipart(form), includeAuth: true, ct);
         }
 
         /// <summary>
@@ -504,7 +555,7 @@ namespace Lelware.Sdk
         ///     with <c>Error == true</c> — it never throws. The raw response text (which may be a
         ///     portal error string) is always returned in <see cref="LelwareResult.RawBody" />.
         /// </summary>
-        private async Task<LelwareResult> SendRawAsync(string verb, string url, string body, bool includeAuth, CancellationToken ct)
+        private async Task<LelwareResult> SendRawAsync(string verb, string url, PreparedBody body, bool includeAuth, CancellationToken ct)
         {
             // 'using' so the native request + its handlers are disposed even on throw.
             using var request = new UnityWebRequest(url, verb)
@@ -512,7 +563,7 @@ namespace Lelware.Sdk
                 downloadHandler = new DownloadHandlerBuffer()
             };
             var headers = ConfigureRequest(request, body, includeAuth);
-            LogRequest(verb, url, body, headers);
+            LogRequest(verb, url, body.LogText, headers);
 
             // Register cancellation: abort the in-flight request, which completes the op
             // with a Result of ConnectionError so the await below unblocks.
@@ -567,14 +618,14 @@ namespace Lelware.Sdk
         ///     and a 2xx with no body yields null data with <c>Error == false</c>. On a non-2xx the
         ///     (usually plain-text) error body is surfaced via <see cref="LelwareResult.RawBody" />.
         /// </summary>
-        private async Task<LelwareResult<byte[]>> SendRawBytesAsync(string verb, string url, string body, bool includeAuth, CancellationToken ct)
+        private async Task<LelwareResult<byte[]>> SendRawBytesAsync(string verb, string url, PreparedBody body, bool includeAuth, CancellationToken ct)
         {
             using var request = new UnityWebRequest(url, verb)
             {
                 downloadHandler = new DownloadHandlerBuffer()
             };
             var headers = ConfigureRequest(request, body, includeAuth);
-            LogRequest(verb, url, body, headers);
+            LogRequest(verb, url, body.LogText, headers);
 
             using var registration = ct.CanBeCanceled
                 ? ct.Register(() => request.Abort())
@@ -632,7 +683,7 @@ namespace Lelware.Sdk
         ///     UnityWebRequest has no read-back of set headers on every platform, so we mirror them
         ///     into the returned list as we set them — it can't drift from what's actually sent.</para>
         /// </summary>
-        private List<KeyValuePair<string, string>> ConfigureRequest(UnityWebRequest request, string body, bool includeAuth)
+        private List<KeyValuePair<string, string>> ConfigureRequest(UnityWebRequest request, PreparedBody body, bool includeAuth)
         {
             // Only collect headers for the log when logging is actually on.
             var headers = _config.EnableRequestLogging && Logger != null
@@ -644,13 +695,14 @@ namespace Lelware.Sdk
                 request.timeout = _config.TimeoutSeconds;
             }
 
-            if (body != null)
+            if (body.HasBody)
             {
-                var payload = Encoding.UTF8.GetBytes(body);
-                request.uploadHandler = new UploadHandlerRaw(payload) { contentType = "application/json" };
+                // The bytes + their content type are already prepared (JSON text, a raw octet-stream
+                // blob, or a serialized multipart form) — attach them verbatim.
+                request.uploadHandler = new UploadHandlerRaw(body.Bytes) { contentType = body.ContentType };
                 // Content-Type isn't set via SetRequestHeader (it rides on the upload handler), so
                 // record it explicitly for the log to reflect the wire request faithfully.
-                headers?.Add(new KeyValuePair<string, string>("Content-Type", "application/json"));
+                headers?.Add(new KeyValuePair<string, string>("Content-Type", body.ContentType));
             }
 
             // Always identify as an API client.
@@ -675,6 +727,69 @@ namespace Lelware.Sdk
             }
 
             return headers;
+        }
+
+        /// <summary>
+        ///     A request body prepared for the wire: the raw bytes plus the Content-Type describing
+        ///     them, and a short human-readable form for the request log. Lets the ONE send path carry
+        ///     a JSON string, a raw octet-stream blob, or a serialized multipart form without any of
+        ///     the send methods needing to branch on which it is — <see cref="ConfigureRequest" />
+        ///     just attaches <see cref="Bytes" /> with <see cref="ContentType" />. <see cref="None" />
+        ///     (the default) = no body, for GET/DELETE and empty POSTs.
+        /// </summary>
+        private readonly struct PreparedBody
+        {
+            public readonly byte[] Bytes;       // null => no body
+            public readonly string ContentType; // meaningful only when Bytes != null
+            public readonly string LogText;     // what the request log shows for this body
+
+            private PreparedBody(byte[] bytes, string contentType, string logText)
+            {
+                Bytes = bytes;
+                ContentType = contentType;
+                LogText = logText;
+            }
+
+            /// <summary>True when there are bytes to send (so an upload handler + Content-Type are attached).</summary>
+            public bool HasBody => Bytes != null;
+
+            /// <summary>No body — the shape for GET/DELETE and empty POSTs.</summary>
+            public static PreparedBody None => default;
+
+            /// <summary>A JSON text body (<c>application/json</c>). Null text => no body.</summary>
+            public static PreparedBody Json(string json) =>
+                json == null ? None : new PreparedBody(Encoding.UTF8.GetBytes(json), "application/json", json);
+
+            /// <summary>
+            ///     A raw binary body (an <c>application/octet-stream</c> upload, or any explicit
+            ///     <paramref name="contentType" />). Null bytes => no body; a blank content type
+            ///     defaults to octet-stream. The log shows only the byte count, never the (binary) body.
+            /// </summary>
+            public static PreparedBody Raw(byte[] bytes, string contentType) =>
+                bytes == null
+                    ? None
+                    : new PreparedBody(bytes,
+                        string.IsNullOrEmpty(contentType) ? "application/octet-stream" : contentType,
+                        "<" + bytes.Length + " bytes>");
+
+            /// <summary>
+            ///     A <c>multipart/form-data</c> body serialized from <paramref name="sections" /> (text
+            ///     fields and/or file parts). Unity generates the boundary and we mirror it into the
+            ///     Content-Type exactly as <see cref="UnityWebRequest.Post(string, System.Collections.Generic.List{IMultipartFormSection})" />
+            ///     does (quoted boundary), so the parts parse server-side. Null/empty => no body.
+            /// </summary>
+            public static PreparedBody Multipart(List<IMultipartFormSection> sections)
+            {
+                if (sections == null || sections.Count == 0)
+                {
+                    return None;
+                }
+
+                byte[] boundary = UnityWebRequest.GenerateBoundary();
+                byte[] body = UnityWebRequest.SerializeFormSections(sections, boundary);
+                string contentType = "multipart/form-data; boundary=\"" + Encoding.UTF8.GetString(boundary) + "\"";
+                return new PreparedBody(body, contentType, "<multipart, " + body.Length + " bytes>");
+            }
         }
     }
 }

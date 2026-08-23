@@ -28,13 +28,13 @@ namespace Lelware.Sdk
     ///
     ///     <para><b>Usage:</b></para>
     ///     <code>
-    ///     // one JSON GET through the "pixiv" target:
-    ///     var r = await client.ProxyJsonAsync&lt;IllustDto&gt;("pixiv", "ajax/illust/123");
+    ///     // one JSON GET through the "myapi" target:
+    ///     var r = await client.ProxyJsonAsync&lt;ItemDto&gt;("myapi", "v1/items/123");
     ///     // an image:
-    ///     var img = await client.ProxyBytesAsync("pixiv", "img-original/.../1_p0.jpg");
-    ///     // 200 profiles in one call:
-    ///     var batch = await client.ProxyBatchAsync("pixiv", new ProxyBatchRequest {
-    ///         Requests = { new ProxyBatchItem { Path = "ajax/user/1" }, new ProxyBatchItem { Path = "ajax/user/2" } }
+    ///     var img = await client.ProxyBytesAsync("myapi", "images/thumb.jpg");
+    ///     // 200 records in one call:
+    ///     var batch = await client.ProxyBatchAsync("myapi", new ProxyBatchRequest {
+    ///         Requests = { new ProxyBatchItem { Path = "v1/users/1" }, new ProxyBatchItem { Path = "v1/users/2" } }
     ///     });
     ///     </code>
     /// </summary>
